@@ -142,8 +142,26 @@ fun NowPlayingScreen(
     val pagerState = rememberPagerState(initialPage = if (vm.showLyrics) 1 else 0) { 2 }
     val pagerScope = rememberCoroutineScope()
     val context = LocalContext.current
+    // 与设置页一致：选图后先框选，不直接居中裁掉。
+    var cropUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    var cropBitmap by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
+    var cropLoading by remember { mutableStateOf(false) }
+
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        uri?.let { vm.importPlayerBackground(it) }
+        cropUri = uri
+    }
+
+    val pendingUri = cropUri
+    LaunchedEffect(pendingUri) {
+        if (pendingUri == null) return@LaunchedEffect
+        cropLoading = true
+        val bmp = com.puremusic.ui.components.loadBitmapForCrop(context, pendingUri)
+        cropLoading = false
+        if (bmp == null) {
+            cropUri = null
+        } else {
+            cropBitmap = bmp
+        }
     }
 
     LaunchedEffect(pagerState.currentPage) {
@@ -289,6 +307,31 @@ fun NowPlayingScreen(
 
             Spacer(Modifier.height(14.dp))
         }
+    }
+
+    if (cropLoading) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = {},
+            confirmButton = {},
+            text = { Text("正在读取图片…") },
+        )
+    }
+    val pending = cropBitmap
+    if (pending != null) {
+        com.puremusic.ui.components.ImageCropDialog(
+            bitmap = pending,
+            onDismiss = {
+                pending.recycle()
+                cropBitmap = null
+                cropUri = null
+            },
+            onConfirm = { cropped ->
+                vm.saveCroppedPlayerBackground(cropped)
+                pending.recycle()
+                cropBitmap = null
+                cropUri = null
+            },
+        )
     }
 }
 

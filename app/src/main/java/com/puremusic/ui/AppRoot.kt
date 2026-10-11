@@ -230,7 +230,6 @@ fun AppRoot() {
                         },
                         onOpenSource = { sourceId -> navController.navigate(Destinations.source(sourceId)) },
                         onSearch = { navController.navigate(Destinations.search()) },
-                        onOpenDiscover = { navController.navigate(Destinations.DISCOVER) },
                         onOpenNowPlaying = { navController.navigate(Destinations.NOW_PLAYING) },
                     )
                 }

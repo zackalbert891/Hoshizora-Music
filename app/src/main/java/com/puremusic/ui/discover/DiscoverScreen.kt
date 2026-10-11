@@ -133,11 +133,7 @@ fun DiscoverScreen(
 
             when (state.tab) {
                 DiscoverTab.RECOMMEND -> recommendSection(
-                    liked = state.liked,
                     daily = state.daily,
-                    fm = state.fm,
-                    curated = state.curated,
-                    onOpenPlaylist = onOpenPlaylist,
                     onPlayAll = { song, list ->
                         vm.play(song, list)
                         onOpenNowPlaying()
@@ -246,25 +242,18 @@ private fun TabRow(
 //  推荐页
 // ═══════════════════════════════════════════════════════════════
 
+/**
+ * 推荐页：**只保留每日推荐**。
+ *
+ * 原先这里有四块：「我喜欢的音乐」「每日推荐」「私人 FM」「精品歌单」。
+ * 前三者已全部撤掉——红心就是歌单 id=1，音乐库的网易云页已经有了，重复；
+ * 私人 FM 接口已下线（长期空区块）；精品歌单的内容在「歌单广场」里按分类也能翻到。
+ * 只留每日推荐：每天 32 首，真正每天不同、且只能从这里进。
+ */
 private fun androidx.compose.foundation.lazy.LazyListScope.recommendSection(
-    liked: List<Song>,
     daily: List<Song>,
-    fm: List<Song>,
-    curated: List<PlaylistTile>,
-    onOpenPlaylist: (String, String, String) -> Unit,
     onPlayAll: (Song, List<Song>) -> Unit,
 ) {
-    if (liked.isNotEmpty()) {
-        item(key = "liked-h") { SectionHeader("我喜欢的音乐", "${liked.size} 首") }
-        item(key = "liked") {
-            SongStrip(
-                songs = liked,
-                tint = Color(0xFFE23A3A),
-                icon = Icons.Filled.Favorite,
-                onPlay = onPlayAll,
-            )
-        }
-    }
     if (daily.isNotEmpty()) {
         item(key = "daily-h") { SectionHeader("每日推荐", "${daily.size} 首") }
         item(key = "daily") {
@@ -275,33 +264,9 @@ private fun androidx.compose.foundation.lazy.LazyListScope.recommendSection(
                 onPlay = onPlayAll,
             )
         }
-    }
-    // 私人 FM 的接口 2026-11 已 404，拉不到就不渲染这个区块 —— 显示一个空的「私人 FM」
-    // 只会让人以为是加载中没回来。
-    if (fm.isNotEmpty()) {
-        item(key = "fm-h") { SectionHeader("私人 FM", "换一批") }
-        item(key = "fm") {
-            SongStrip(
-                songs = fm,
-                tint = Color(0xFF7C5CE6),
-                icon = Icons.Filled.Radio,
-                onPlay = onPlayAll,
-            )
-        }
-    }
-    if (curated.isNotEmpty()) {
-        item(key = "cur-h") { SectionHeader("精品歌单", "网易云官方挑选") }
-        itemsIndexed(curated, key = { _, t -> "cur-" + t.id }) { index, tile ->
-            PlaylistRow(
-                tile = tile,
-                index = index,
-                onClick = { onOpenPlaylist("netease", tile.kindRef, tile.name) },
-            )
-        }
-    }
-    if (liked.isEmpty() && daily.isEmpty() && curated.isEmpty()) {
+    } else {
         item(key = "rec-empty") {
-            ErrorHint("登录网易云后这里会显示你的红心与每日推荐")
+            ErrorHint("登录网易云后这里会显示每天为你推荐的 30 首")
         }
     }
 }

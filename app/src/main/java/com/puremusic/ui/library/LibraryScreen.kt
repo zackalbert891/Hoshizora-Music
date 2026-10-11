@@ -87,7 +87,6 @@ fun LibraryScreen(
     onOpenPlaylist: (sourceId: String, id: String, name: String) -> Unit,
     onOpenSource: (sourceId: String) -> Unit,
     onSearch: () -> Unit,
-    onOpenDiscover: () -> Unit,
     onOpenNowPlaying: () -> Unit = {},
 ) {
     val vm: LibraryViewModel = hiltViewModel()
@@ -177,18 +176,6 @@ fun LibraryScreen(
                         onClick = { onOpenSource(MusicSourceType.NETEASE.id) },
                     )
                 }
-            }
-
-            // 「发现」入口：排行榜 / 歌单广场 / 每日推荐。内容多且要独立滚动，
-            // 塞进音乐库首页会把这一页拉得过长，所以走一个单独的页面。
-            item {
-                SectionHeader(title = "发现音乐")
-            }
-            item {
-                DiscoverEntryRow(
-                    onOpen = onOpenDiscover,
-                    onOpenPlaylist = { id, n -> onOpenPlaylist(MusicSourceType.NETEASE.id, id, n) },
-                )
             }
 
             // 我喜欢的 / 播放历史
@@ -311,97 +298,6 @@ fun LibraryScreen(
                 TextButton(onClick = { pendingDelete = null }) { Text("取消") }
             },
         )
-    }
-}
-
-/**
- * 「发现音乐」入口行：排行榜 / 歌单广场 / 每日推荐三张卡。
- *
- * 之前这里塞的是「我的音乐资产」横滑条（红心/排行/最近播放/每日推荐/FM 五张小卡），
- * 但那一版有两个硬伤：① 只有红心有数据，另外四个接口当时拉不通，整块长期半空；
- * ② 每张卡只有 6 首歌，看不全也点不进，只能当摆设。改成三个**能真正走通**的入口：
- * 榜单与歌单广场都是免登录可用的完整列表（63 张榜 + 分类歌单），
- * 每日推荐需要登录但一进去就能播放 30 首。
- */
-@Composable
-private fun DiscoverEntryRow(
-    onOpen: () -> Unit,
-    onOpenPlaylist: (id: String, name: String) -> Unit,
-) {
-    LazyRow(
-        contentPadding = PaddingValues(horizontal = UiTokens.SpaceL),
-        horizontalArrangement = Arrangement.spacedBy(UiTokens.SpaceM),
-    ) {
-        item(key = "disc-tl") {
-            EntryTile(
-                title = "排行榜",
-                subtitle = "63 张榜",
-                icon = Icons.Filled.Leaderboard,
-                tint = Color(0xFFFF8A3D),
-                modifier = Modifier.width(160.dp),
-                onClick = onOpen,
-            )
-        }
-        item(key = "disc-sq") {
-            EntryTile(
-                title = "歌单广场",
-                subtitle = "按分类逛",
-                icon = Icons.Filled.LibraryMusic,
-                tint = Color(0xFF4C8DE8),
-                modifier = Modifier.width(160.dp),
-                onClick = onOpen,
-            )
-        }
-        // 每日推荐直达：网易云每天给的 30 首，id 是服务端返回的推荐歌单号，这里用
-        // 固定入口进发现页的「推荐」页签，避免首页再拉一次数据。
-        item(key = "disc-daily") {
-            EntryTile(
-                title = "每日推荐",
-                subtitle = "每天 30 首",
-                icon = Icons.Filled.AutoAwesome,
-                tint = Color(0xFF2FBF71),
-                modifier = Modifier.width(160.dp),
-                onClick = onOpen,
-            )
-        }
-    }
-}
-
-/** 发现入口小卡：纯色描边（不上玻璃，横滑时玻璃每帧重绘会掉帧）。 */
-@Composable
-private fun EntryTile(
-    title: String,
-    subtitle: String,
-    icon: ImageVector,
-    tint: Color,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit,
-) {
-    Surface(
-        shape = RoundedCornerShape(UiTokens.RadiusLarge),
-        color = MaterialTheme.colorScheme.surface,
-        border = BorderStroke(1.dp, tint.copy(alpha = 0.35f)),
-        modifier = modifier.pressable(scaleDown = 0.95f, onClick = onClick),
-    ) {
-        Row(
-            Modifier.padding(horizontal = 14.dp, vertical = 14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(22.dp))
-            Spacer(Modifier.width(10.dp))
-            Column {
-                Text(
-                    title,
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.onSurface,
-                )
-                Text(
-                    subtitle,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
     }
 }
 

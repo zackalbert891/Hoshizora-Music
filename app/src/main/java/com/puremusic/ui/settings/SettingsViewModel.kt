@@ -143,6 +143,31 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    /**
+     * 存框选好的背景图（音乐库/设置页）。[bitmap] 由界面层的 [ImageCropDialog] 产出。
+     *
+     * 存完必须 recycle：框选时为了画质把原图降采样到 2048px 再裁完还留在手里，
+     * 不回收就是白白多占十几 MB。
+     */
+    fun saveCroppedBackground(bitmap: android.graphics.Bitmap) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val path = com.puremusic.ui.components.saveBitmapAsJpeg(context, bitmap, "background.jpg")
+            bitmap.recycle()
+            if (path != null) settingsStore.setBackgroundImage(path)
+        }
+    }
+
+    /** 存框选好的播放页背景图。 */
+    fun saveCroppedPlayerBackground(bitmap: android.graphics.Bitmap) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val path = com.puremusic.ui.components.saveBitmapAsJpeg(
+                context, bitmap, "player_background.jpg",
+            )
+            bitmap.recycle()
+            if (path != null) settingsStore.setPlayerBackground(path)
+        }
+    }
+
     fun clearBackground() {
         viewModelScope.launch { settingsStore.setBackgroundImage(null) }
     }

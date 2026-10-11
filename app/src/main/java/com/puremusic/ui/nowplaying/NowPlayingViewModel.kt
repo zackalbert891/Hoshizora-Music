@@ -1,5 +1,6 @@
 package com.puremusic.ui.nowplaying
 
+import android.content.Context
 import android.net.Uri
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -16,6 +17,8 @@ import com.puremusic.model.ThemeConfig
 import com.puremusic.playback.PlayerManager
 import com.puremusic.source.SourceRegistry
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
@@ -25,6 +28,7 @@ import javax.inject.Inject
 
 @HiltViewModel
 class NowPlayingViewModel @Inject constructor(
+    @ApplicationContext private val context: Context,
     private val playerManager: PlayerManager,
     private val sourceRegistry: SourceRegistry,
     private val settingsStore: SettingsStore,
@@ -97,6 +101,17 @@ class NowPlayingViewModel @Inject constructor(
         viewModelScope.launch {
             val path = settingsStore.copyToInternalFile(uri, "player_background.jpg")
             settingsStore.setPlayerBackground(path)
+        }
+    }
+
+    /** 存框选好的播放页背景图（存完 recycle，别让大图挂在内存里）。 */
+    fun saveCroppedPlayerBackground(bitmap: android.graphics.Bitmap) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val path = com.puremusic.ui.components.saveBitmapAsJpeg(
+                context, bitmap, "player_background.jpg",
+            )
+            bitmap.recycle()
+            if (path != null) settingsStore.setPlayerBackground(path)
         }
     }
 

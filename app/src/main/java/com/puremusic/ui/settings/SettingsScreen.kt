@@ -82,11 +82,41 @@ fun SettingsScreen(
 
     val playerBgPath by vm.playerBackgroundPath.collectAsStateWithLifecycle()
 
+    // 背景图走「选图 → 框选 → 存盘」三步：直接 ContentScale.Crop 会把竖图的主体裁没。
+    // cropTarget 记住这次要写去哪（音乐库背景 / 播放页背景），确认后按它分派。
+    var cropSource by remember { mutableStateOf<android.net.Uri?>(null) }
+    var cropTarget by remember { mutableStateOf<CropTarget?>(null) }
+    var cropBitmap by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
+    var cropLoading by remember { mutableStateOf(false) }
+
+    val context = androidx.compose.ui.platform.LocalContext.current
+
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        uri?.let { vm.importBackground(it) }
+        if (uri != null) {
+            cropTarget = CropTarget.LIBRARY
+            cropSource = uri
+        }
     }
     val playerImagePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        uri?.let { vm.importPlayerBackground(it) }
+        if (uri != null) {
+            cropTarget = CropTarget.PLAYER
+            cropSource = uri
+        }
+    }
+
+    // 选中 Uri 后解码；解码失败（格式不支持/文件被删）就静默退回，不弹框打断。
+    val srcUri = cropSource
+    LaunchedEffect(srcUri) {
+        if (srcUri == null) return@LaunchedEffect
+        cropLoading = true
+        val bmp = com.puremusic.ui.components.loadBitmapForCrop(context, srcUri)
+        cropLoading = false
+        if (bmp == null) {
+            cropSource = null
+            cropTarget = null
+        } else {
+            cropBitmap = bmp
+        }
     }
 
     // 背景由 AppRoot 的 AppBackground 统一铺满整屏（含底部栏），页面不再自己画。
@@ -323,7 +353,7 @@ fun SettingsScreen(
             Text("背景图片", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Button(onClick = { imagePicker.launch("image/*") }) { Text("导入背景图片") }
+                Button(onClick = { imagePicker.launch("image/*") }) { Text("选择并框选") }
                 if (bgPath != null) {
                     TextButton(onClick = vm::clearBackground) { Text("清除") }
                 }
@@ -335,7 +365,7 @@ fun SettingsScreen(
             )
             Spacer(Modifier.height(10.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Button(onClick = { playerImagePicker.launch("image/*") }) { Text("导入播放页背景") }
+                Button(onClick = { playerImagePicker.launch("image/*") }) { Text("选择并框选（播放页）") }
                 if (playerBgPath != null) {
                     TextButton(onClick = vm::clearPlayerBackground) { Text("清除") }
                 }
@@ -368,7 +398,43 @@ fun SettingsScreen(
             onDismiss = { showCookieDialog = false },
         )
     }
+
+    // 框选对话框：解码中先给个转圈，别让用户以为点了没反应
+    if (cropLoading) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = {},
+            confirmButton = {},
+            text = { Text("正在读取图片…") },
+        )
+    }
+    val pending = cropBitmap
+    if (pending != null && cropTarget != null) {
+        val target = cropTarget!!
+        com.puremusic.ui.components.ImageCropDialog(
+            bitmap = pending,
+            onDismiss = {
+                // 取消也要回收，否则这张 2048px 的解码图会一直挂在内存里
+                pending.recycle()
+                cropBitmap = null
+                cropSource = null
+                cropTarget = null
+            },
+            onConfirm = { cropped ->
+                when (target) {
+                    CropTarget.LIBRARY -> vm.saveCroppedBackground(cropped)
+                    CropTarget.PLAYER -> vm.saveCroppedPlayerBackground(cropped)
+                }
+                pending.recycle()
+                cropBitmap = null
+                cropSource = null
+                cropTarget = null
+            },
+        )
+    }
 }
+
+/** 这次框选的图要写到哪个背景槽位。 */
+private enum class CropTarget { LIBRARY, PLAYER }
 
 @Composable
 private fun CookieDialog(onSave: (String) -> Unit, onDismiss: () -> Unit) {

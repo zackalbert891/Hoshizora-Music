@@ -31,14 +31,13 @@ data class DiscoverUiState(
     val error: String? = null,
 
     // ── 推荐 ──
-    /** 红心（我喜欢的音乐，歌单 id=1）。登录后可用，是"同步数据"里最有用的一块。 */
-    val liked: List<Song> = emptyList(),
-    /** 每日推荐歌单（30 首）。 */
+    /**
+     * 每日推荐（32 首）。
+     *
+     * 「我喜欢的音乐」曾放在这里，但它是歌单 id=1，跟音乐库的网易云页重复；
+     * 私人 FM 接口 2026-11 已下线，长期是个空区块。两个都撤了，这一页只留每日推荐。
+     */
     val daily: List<Song> = emptyList(),
-    /** 私人 FM（登录后个性化更强）。 */
-    val fm: List<Song> = emptyList(),
-    /** 编辑精选 / 精品歌单（免登录可用）。 */
-    val curated: List<PlaylistTile> = emptyList(),
 
     // ── 排行榜 ──
     val toplists: List<ToplistGroup> = emptyList(),
@@ -51,8 +50,7 @@ data class DiscoverUiState(
     val squareLoadingMore: Boolean = false,
 ) {
     val anyContent: Boolean
-        get() = liked.isNotEmpty() || daily.isNotEmpty() || fm.isNotEmpty() ||
-            curated.isNotEmpty() || toplists.isNotEmpty() || square.isNotEmpty()
+        get() = daily.isNotEmpty() || toplists.isNotEmpty() || square.isNotEmpty()
 }
 
 /**
@@ -111,53 +109,45 @@ class DiscoverViewModel @Inject constructor(
         loadSquare(reset = true)
     }
 
-    /** 整页刷新：榜单 / 分类 / 歌单 + （登录后的）每日推荐与 FM。 */
+    /** 整页刷新：榜单 / 分类 / 歌单 + （登录后的）每日推荐。 */
     fun refresh() {
         viewModelScope.launch {
             accountStore.awaitLoaded()
             _state.value = _state.value.copy(loading = true, error = null)
             val cookie = accountStore.accounts.value[MusicSourceType.NETEASE]?.cookie
 
-            // 并发三路：榜单 / 分类 / 精品歌单。任一失败只影响自己那一块（各自 try/catch）。
+            // 并发两路：榜单 / 分类。任一失败只影响自己那一块（各自 try/catch）。
             val groups: List<ToplistGroup>
             val cats: List<String>
-            val curated: List<PlaylistTile>
             coroutineScope {
                 val topJob = async { runCatching { discover.toplists(cookie) } }
                 val catJob = async { runCatching { discover.categories() } }
-                val curatedJob = async {
-                    runCatching { discover.highQualityPlaylists(limit = 12, cookie = cookie) }
-                }
                 groups = topJob.await().getOrNull().orEmpty().toGroups()
                 cats = catJob.await().getOrNull().orEmpty().map { it.name }
-                curated = curatedJob.await().getOrNull()?.playlists.orEmpty().toTiles()
             }
 
             _state.value = _state.value.copy(
                 loading = false,
                 toplists = groups,
                 categories = cats,
-                curated = curated,
                 error = if (groups.isEmpty() && cats.isEmpty()) "榜单与歌单都拉取失败，检查网络" else null,
             )
 
-            // 登录态相关的两块单独再拉，失败不影响上面的浏览功能
-            loadPersonalized()
+            // 每日推荐需要登录态，失败不影响上面的浏览功能
+            loadDaily()
             if (_state.value.square.isEmpty()) loadSquare(reset = true)
         }
     }
 
-    /** 红心 / 每日推荐 / 私人 FM（后两个分别需登录，FM 接口已下线故常常为空）。 */
-    private fun loadPersonalized() {
+    /** 每日推荐（30 首，需登录）。未登录直接清空，不白跑请求。 */
+    private fun loadDaily() {
         if (!loggedIn) {
-            _state.value = _state.value.copy(liked = emptyList(), daily = emptyList(), fm = emptyList())
+            _state.value = _state.value.copy(daily = emptyList())
             return
         }
         viewModelScope.launch {
-            val liked = runCatching { netease.likedSongs() }.getOrDefault(emptyList())
             val daily = runCatching { netease.dailyRecommend() }.getOrDefault(emptyList())
-            val fm = runCatching { netease.personalFm() }.getOrDefault(emptyList())
-            _state.value = _state.value.copy(liked = liked, daily = daily, fm = fm)
+            _state.value = _state.value.copy(daily = daily)
         }
     }
 
