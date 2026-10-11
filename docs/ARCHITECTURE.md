@@ -1,4 +1,4 @@
-# PureMusic 架构设计
+# Hoshizora 架构设计
 
 ## 1. 分层总览
 
@@ -17,9 +17,8 @@
 │ Source 插件层       │   │ 播放引擎                │
 │ MusicSource 接口    │   │ PlayerManager +         │
 │ ├ LocalMusicSource │   │ PlaybackService(Media3) │
-│ ├ NeteaseMusicSource│  └──────────▲──────────────┘
-│ └ QqMusicSource    │              │ 需要直链时调 getSongUrl()
-└───────┬────────────┘              │
+│ └ 多个在线源        │   └──────────▲──────────────┘
+└───────┬────────────┘              │ 需要直链时调 getSongUrl()
         │ 持久化                    │
 ┌───────▼────────────┐   ┌──────────▼──────────────┐
 │ 数据层               │   │ 模型层 model/           │
@@ -74,25 +73,20 @@ interface MusicSource {
 
 扩展方向：字体、圆角、间距、完整 tonal palette（可引入 `materialkolor` 库）。
 
-## 3. 网易云 weapi 签名
+## 3. 音源接口鉴权
 
-`NeteaseCrypto` 实现了网易云移动端接口的稳定签名部分：
+各在线源接口采用各自的签名 / 鉴权方案，相关实现集中在 `source/<平台>/` 包内，此处不展开。
+关键点：
 
-```
-params    = Base64( AES-CBC( AES-CBC(json, nonce), secKey ) )
-encSecKey = hex( RSA( reverse(secKey) ) )
-nonce = "0CoJUm6Qyw8W8jud"   iv = "0102030405060708"
-```
-
-- 所有请求为 `POST`，表单体 `params` + `encSecKey`。
-- 登录后 `MUSIC_U` cookie 由 `AccountStore` 缓存，网络拦截器自动附带。
-- 备注：歌曲直链当前走 `weapi`；网易云新接口多改用 `eapi`（需额外 `eapiKey` 与 `clientSign`），作为后续增强点。
+- 登录态由 `AccountStore` 缓存并在网络层自动附加，未登录时仅能使用免登录的接口；
+- 取流类接口通常需要携带登录态，否则只能拿到试听片段；
+- 部分写接口（如评论点赞）对客户端身份与风控敏感，需按移动端身份调用。
 
 ## 4. 数据流示例（搜索 → 播放）
 
 ```
 用户输入关键词 → SearchViewModel.search()
-  → SourceRegistry.byId(type).search()      # weapi / JSONP
+  → SourceRegistry.byId(type).search()      # 各源统一入口
   → List<Song>
   → 点击结果 → PlayerManager.play(song)
       → getSongUrl(song)                    # 解析直链
@@ -102,16 +96,13 @@ nonce = "0CoJUm6Qyw8W8jud"   iv = "0102030405060708"
 
 ## 5. 扩展点清单
 
-- [x] QQ 音乐直链（`musicu.fcg` 的 `vkey` 签名）、歌词、登录
-- [x] 网易云 `eapi` 签名（`NeteaseCrypto.eapi`，取流 weapi 优先 + eapi 兜底，码率 999000 → 320000 → 128000 降级）
+- [x] 在线源直链 / 歌词 / 登录
 - [x] 本地歌单持久化 / 收藏（Room：自建歌单、我喜欢的、播放历史）
 - [x] Room 数据库（`db/` 包：`AppDatabase` + 三个 DAO + `MusicRepository`）
 - [ ] 均衡器（播放速度、音质切换已完成，见 [6.2](#62-播放器增强)）
 - [x] 更多主题维度：字体缩放、圆角风格、布局密度（完整 tonal palette 未做）
-- [x] 二维码登录（QQ 扫码见 `ui/login/QqLoginManager`；网易云扫码见 `source/netease/NeteaseQrLogin`，
-  本地用 ZXing 生成二维码，code 800/801/802/803 对应过期/待扫/待确认/成功）
-- [x] 音源登录态取流（VIP 曲目）：`NeteaseDirect.songUrl(id, cookie)` 透传 Cookie，
-  此前未带 Cookie 导致登录后仍走匿名通道、只能拿试听片段
+- [x] 二维码登录（本地用 ZXing 生成二维码）
+- [x] 音源登录态取流（VIP 曲目）：透传登录 Cookie，避免匿名通道只能拿试听片段
 
 ## 6. 数据持久化
 
