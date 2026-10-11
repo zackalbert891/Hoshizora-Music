@@ -27,9 +27,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Album
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Leaderboard
 import androidx.compose.material.icons.filled.LibraryMusic
+import androidx.compose.material.icons.filled.Radio
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
@@ -90,6 +94,7 @@ fun LibraryScreen(
     val localPlaylists by vm.localPlaylists.collectAsStateWithLifecycle()
     val favorites by vm.favorites.collectAsStateWithLifecycle()
     val history by vm.history.collectAsStateWithLifecycle()
+    val neteaseAssets by vm.neteaseAssets.collectAsStateWithLifecycle()
 
     var showCreateDialog by remember { mutableStateOf(false) }
     var pendingDelete by remember { mutableStateOf<Playlist?>(null) }
@@ -170,6 +175,34 @@ fun LibraryScreen(
                         modifier = Modifier.weight(1f),
                         index = 2,
                         onClick = { onOpenSource(MusicSourceType.NETEASE.id) },
+                    )
+                }
+            }
+
+            // 网易云「我的音乐资产」：红心 / 排行 / 最近播放 / 每日推荐 / 私人FM
+            // 只有登录了网易云且确实拉到数据才显示，避免未登录时占位。
+            if (accounts[MusicSourceType.NETEASE] != null && !neteaseAssets.isEmpty) {
+                item {
+                    SectionHeader(
+                        title = "我的音乐资产",
+                        actionIcon = Icons.Filled.Refresh,
+                        actionContentDescription = "刷新",
+                        onAction = { vm.refreshNeteaseAssets() },
+                    )
+                }
+                item {
+                    NeteaseAssetStrip(
+                        loading = neteaseAssets.loading,
+                        liked = neteaseAssets.liked,
+                        rank = neteaseAssets.rank,
+                        recent = neteaseAssets.recent,
+                        daily = neteaseAssets.daily,
+                        fm = neteaseAssets.fm,
+                        onPlay = { song, list ->
+                            vm.play(song, list)
+                            onOpenNowPlaying()
+                        },
+                        onOpenAll = { onOpenSource(MusicSourceType.NETEASE.id) },
                     )
                 }
             }
@@ -296,6 +329,125 @@ fun LibraryScreen(
         )
     }
 }
+
+/**
+ * 网易云「我的音乐资产」横滑区：五个维度各一张卡，点击封面即播（带整段队列）。
+ *
+ * 设计取舍：
+ * - 卡片用**纯色 surface + 细边**，不用液态玻璃——玻璃每帧重绘，横滑 5 张会明显掉帧
+ *   （记忆里的教训：长列表/长横滑一律不上玻璃）。
+ * - 每张卡只展示 8 首，够认全类型；想看全量走"查看全部"进平台页。
+ */
+@Composable
+private fun NeteaseAssetStrip(
+    loading: Boolean,
+    liked: List<Song>,
+    rank: List<Song>,
+    recent: List<Song>,
+    daily: List<Song>,
+    fm: List<Song>,
+    onPlay: (Song, List<Song>) -> Unit,
+    onOpenAll: () -> Unit,
+) {
+    val groups = listOf(
+        AssetGroup("红心", liked, Color(0xFFE23A3A), Icons.Filled.Favorite),
+        AssetGroup("听歌排行", rank, Color(0xFFFF8A3D), Icons.Filled.Leaderboard),
+        AssetGroup("最近播放", recent, Color(0xFF4C8DE8), Icons.Filled.History),
+        AssetGroup("每日推荐", daily, Color(0xFF2FBF71), Icons.Filled.AutoAwesome),
+        AssetGroup("私人FM", fm, Color(0xFF7C5CE6), Icons.Filled.Radio),
+    ).filter { it.songs.isNotEmpty() }
+
+    if (groups.isEmpty()) {
+        EmptyHint(if (loading) "正在同步网易云数据…" else "暂无网易云数据")
+        return
+    }
+
+    LazyRow(
+        contentPadding = PaddingValues(horizontal = UiTokens.SpaceL),
+        horizontalArrangement = Arrangement.spacedBy(UiTokens.SpaceM),
+    ) {
+        items(groups, key = { it.title }) { group ->
+            Surface(
+                shape = RoundedCornerShape(UiTokens.RadiusLarge),
+                color = MaterialTheme.colorScheme.surface,
+                border = BorderStroke(1.dp, group.tint.copy(alpha = 0.35f)),
+                modifier = Modifier.width(168.dp),
+            ) {
+                Column(Modifier.padding(12.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            group.icon,
+                            contentDescription = null,
+                            tint = group.tint,
+                            modifier = Modifier.size(16.dp),
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            group.title,
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.weight(1f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            "${group.songs.size}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    // 迷你曲目榜：序号 + 歌名，纯文本最省绘制开销
+                    group.songs.take(6).forEachIndexed { i, song ->
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .pressable(scaleDown = 0.98f, onClick = { onPlay(song, group.songs) })
+                                .padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                "${i + 1}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = group.tint.copy(alpha = 0.8f),
+                                modifier = Modifier.width(16.dp),
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    song.title,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    song.artist,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    TextButton(
+                        onClick = onOpenAll,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("查看全部", style = MaterialTheme.typography.labelSmall) }
+                }
+            }
+        }
+    }
+}
+
+private data class AssetGroup(
+    val title: String,
+    val songs: List<Song>,
+    val tint: Color,
+    val icon: ImageVector,
+)
 
 /** 顶部搜索栏：整块可点击，跳转到搜索页。玻璃胶囊 + 弹簧按压。 */
 @Composable

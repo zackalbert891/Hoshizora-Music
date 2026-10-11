@@ -67,6 +67,7 @@ class DiagActivity : ComponentActivity() {
                     intent.getStringExtra("song").orEmpty(),
                     intent.getStringExtra("cid").orEmpty(),
                 )
+                "neteaseassets" -> runNeteaseAssets()
                 else -> runDiag()
             }
             tv.text = out.toString()
@@ -78,7 +79,99 @@ class DiagActivity : ComponentActivity() {
         Log.d(TAG, s)
     }
 
-    private suspend fun runDiag() = withContext(Dispatchers.IO) {
+    /**
+ * 网易云「我的音乐资产」五接口探针。
+ *
+ * 一次跑完红心 / 听歌排行 / 最近播放 / 每日推荐 / 私人FM，各自打印数量与样本，
+ * 用来判断哪些接口在真机网络下真的通（电脑出口 IP 常被风控，只能真机验证）。
+ */
+private suspend fun runNeteaseAssets() = withContext(Dispatchers.IO) {
+    line("════ 网易云音乐资产 ════")
+    accounts.awaitLoaded()
+    val a = accounts.accounts.value[MusicSourceType.NETEASE]
+    if (a == null) {
+        line("网易云未登录 —— 五个接口全部需要登录态（MUSIC_U）")
+        line("请先在 App「设置 → 网易云音乐 → 一键登录」完成登录再跑本探针")
+        return@withContext
+    }
+    line("账号 uid=${a.userId} 昵称=${a.nickname ?: "?"} cookieLen=${a.cookie.length}")
+
+    suspend fun probe(label: String, block: suspend () -> List<com.puremusic.model.Song>) {
+        val songs = runCatching { block() }.getOrElse { emptyList() }
+        line("")
+        line("【$label】 ${songs.size} 首")
+        songs.take(3).forEach {
+            line("   · ${it.title} / ${it.artist} (${it.durationMs / 1000}s) id=${it.id}")
+        }
+        if (songs.isEmpty()) line("   （空）")
+    }
+
+    probe("红心") { neteaseSource.likedSongs() }
+    probe("听歌排行") { neteaseSource.playRank() }
+    probe("最近播放") { neteaseSource.recentPlays() }
+    probe("每日推荐") { neteaseSource.dailyRecommend() }
+    probe("私人FM") { neteaseSource.personalFm() }
+
+    // release 包日志会被裁掉，探针界面是唯一可靠出口 —— 直接把服务端原文打出来。
+    line("")
+    line("════ 服务端原文 ════")
+    line(neteaseDirectProbe(a.cookie))
+}
+
+/** 逐个接口把原始响应打出来（只截前 260 字符，够看清 code / 错误信息 / 容器字段名）。 */
+private suspend fun neteaseDirectProbe(cookie: String): String = withContext(Dispatchers.IO) {
+    val sb = StringBuilder()
+    suspend fun hit(label: String, url: String, form: Map<String, String>) {
+        val body = form.entries.joinToString("&") { (k, v) ->
+            "${java.net.URLEncoder.encode(k, "UTF-8")}=${java.net.URLEncoder.encode(v, "UTF-8")}"
+        }
+        val req = okhttp3.Request.Builder()
+            .url(url)
+            .post(body.toRequestBody("application/x-www-form-urlencoded".toMediaType()))
+            .header("Cookie", cookie)
+            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+            .header("Origin", "https://music.163.com")
+            .header("Referer", "https://music.163.com/")
+            .build()
+        val txt = runCatching {
+            http.newCall(req).execute().use { it.body?.string() }
+        }.getOrNull()
+        sb.appendLine("[$label] ${txt?.take(260) ?: "空响应"}")
+    }
+    val csrf = Regex("""(?:^|;\s*)__csrf=([^;]+)""").find(cookie)?.groupValues?.get(1).orEmpty()
+    val uid = Regex("""(?:^|;\s*)uid=([^;]+)""").find(cookie)?.groupValues?.get(1) ?: ""
+
+    hit("playRecord-eapi",
+        "https://interface.music.163.com/eapi/v1/play/record",
+        com.puremusic.source.netease.NeteaseCrypto.eapi(
+            "/api/v1/play/record",
+            mapOf("uid" to uid, "type" to "1", "limit" to "30", "csrf_token" to csrf),
+        ),
+    )
+    hit("playRecord-weapi",
+        "https://interface.music.163.com/weapi/v1/play/record",
+        com.puremusic.source.netease.NeteaseCrypto.weapi(
+            mapOf("uid" to uid, "type" to "1", "limit" to "30", "csrf_token" to csrf),
+        ),
+    )
+    hit("recommendResource-eapi",
+        "https://interface.music.163.com/eapi/recommend/resource",
+        com.puremusic.source.netease.NeteaseCrypto.eapi(
+            "/api/recommend/resource",
+            mapOf("limit" to "1", "csrf_token" to csrf),
+        ),
+    )
+    hit("personalFm-weapi",
+        "https://interface.music.163.com/weapi/personal/fm",
+        com.puremusic.source.netease.NeteaseCrypto.weapi(
+            mapOf("time" to (System.currentTimeMillis() / 1000).toString(),
+                "algorithm" to "10", "wechat" to "false", "csrf_token" to csrf),
+        ),
+    )
+    sb.toString()
+}
+
+private suspend fun runDiag() = withContext(Dispatchers.IO) {
         line("════════ 自检开始 ════════")
 
         // ---------- 1. 登录态 ----------

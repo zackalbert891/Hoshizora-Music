@@ -306,6 +306,201 @@ class NeteaseDirect @Inject constructor(
         }.getOrNull()
     }
 
+    // ═══════════════════════════════════════════════════════════════
+    //  「我的音乐资产」：红心 / 听歌排行 / 最近播放 / 每日推荐 / 私人FM
+    //  全部需要登录 Cookie（含 MUSIC_U），匿名一律返回空。
+    // ═══════════════════════════════════════════════════════════════
+
+    /**
+     * 红心（我喜欢的音乐）：`/api/user/playlist` 里的「我喜欢的音乐」歌单，即 id=1 的那条。
+     *
+     * 实现取法：先拉歌单列表找到 [likedFlag] 或 trackCount 最大且 id=1 的那条，
+     * 再走 v6 详情拿全量歌曲。分页拉满 1000 首，超出部分自动翻页。
+     */
+    suspend fun likedSongs(uid: String, cookie: String?): List<NeteaseSong> =
+        withContext(Dispatchers.IO) {
+            val ck = cookie?.takeIf { it.isNotBlank() } ?: return@withContext emptyList()
+            val enriched = enrichCookie(ck)
+            // 网易云「我喜欢的音乐」歌单 id 恒为 1
+            fetchPlaylistSongs("1", enriched).also {
+                Log.d(TAG, "likedSongs n=${it.size}")
+            }
+        }
+
+    /**
+     * 取单个歌单的全量歌曲，**自动翻页**直到取完或达到 [MAX_TRACKS]。
+     *
+     * v6 详情接口单次上限 1000 首，大歌单必须翻页，否则只拿到第一页。
+     */
+    private suspend fun fetchPlaylistSongs(
+        playlistId: String,
+        enriched: String?,
+    ): List<NeteaseSong> {
+        val all = mutableListOf<NeteaseSong>()
+        var offset = 0
+        while (all.size < MAX_TRACKS) {
+            val body = mapOf(
+                "id" to playlistId,
+                "n" to PAGE_LIMIT,
+                "s" to offset * PAGE_LIMIT,
+            )
+            val text = postForm(
+                PLAYLIST_DETAIL_EAPI_URL,
+                NeteaseCrypto.eapi(PLAYLIST_DETAIL_PATH, body),
+                enriched,
+            )
+            val page = parsePlaylistDetail(text)?.tracks.orEmpty()
+            if (page.isEmpty()) break
+            all += page
+            if (page.size < PAGE_LIMIT) break
+            offset++
+        }
+        return all
+    }
+
+    /** 听歌排行（周榜，type=1）：`/api/v1/play/record`，仅登录态可见。 */
+    suspend fun playRank(uid: String, cookie: String?): List<NeteaseSong> =
+        withContext(Dispatchers.IO) {
+            val enriched = cookie?.let { enrichCookie(it) } ?: return@withContext emptyList()
+            fetchPlayRecord(uid, 1, enriched, cookie).also { Log.d(TAG, "playRank week n=${it.size}") }
+        }
+
+    /**
+     * 听歌排行 / 最近播放的统一实现。
+     *
+     * 关键坑：`/api/v1/play/record` **weapi 通道已被网易云收紧**，必须走 eapi（interface3）
+     * 才返回数据；同时 `csrf_token` 必须从 cookie 的 `__csrf` 取真实值，否则被当游客。
+     * 两种通道都试一遍，任一成功即可。
+     */
+    private suspend fun fetchPlayRecord(
+        uid: String,
+        type: Int,
+        enriched: String?,
+        cookie: String?,
+    ): List<NeteaseSong> {
+        val body = mapOf(
+            "uid" to uid,
+            "type" to type.toString(),
+            "limit" to PAGE_LIMIT.toString(),
+            "csrf_token" to csrfOf(cookie),
+        )
+        // eapi 优先
+        val eapiText = postForm(
+            PLAY_RANK_EAPI_URL,
+            NeteaseCrypto.eapi(PLAY_RANK_PATH, body),
+            enriched,
+        )
+        val fromEapi = parseWrappedSongs(eapiText)
+        if (fromEapi.isNotEmpty()) return fromEapi
+        Log.w(TAG, "playRecord eapi 空: ${eapiText?.take(300)}")
+        // weapi 兜底
+        val wb = parseWrappedSongs(
+            postForm(PLAY_RECORD_WEAPI_URL, NeteaseCrypto.weapi(body), enriched),
+        )
+        if (wb.isEmpty()) Log.w(TAG, "playRecord weapi也空")
+        return wb
+    }
+
+    /** 从 cookie 里取 `__csrf`（写接口与部分读接口都要，缺失会被当游客）。 */
+    private fun csrfOf(cookie: String?): String =
+        Regex("""(?:^|;\s*)__csrf=([^;]+)""").find(cookie.orEmpty())
+            ?.groupValues?.get(1).orEmpty()
+
+    /** 最近播放（type=1 最近一周）：同`/api/v1/play/record`，与听歌排行共用接口换 type。 */
+    suspend fun recentPlays(uid: String, cookie: String?): List<NeteaseSong> =
+        withContext(Dispatchers.IO) {
+            val enriched = cookie?.let { enrichCookie(it) } ?: return@withContext emptyList()
+            // type=1 最近一周；与排行同接口，靠 type 区分
+            fetchPlayRecord(uid, 1, enriched, cookie).also {
+                Log.d(TAG, "recentPlays n=${it.size}")
+            }
+        }
+
+    /**
+     * 每日推荐歌单（30 首）：`/api/recommend/resource` 取推荐歌单 id，
+     * 再走 v6 详情拿歌曲。
+     */
+    suspend fun dailyRecommend(cookie: String?): List<NeteaseSong> =
+        withContext(Dispatchers.IO) {
+            val enriched = cookie?.let { enrichCookie(it) } ?: return@withContext emptyList()
+            val body = mapOf("limit" to "1", "csrf_token" to csrfOf(cookie))
+            val recText = postForm(
+                RECOMMEND_RESOURCE_EAPI_URL,
+                NeteaseCrypto.eapi(RECOMMEND_RESOURCE_PATH, body),
+                enriched,
+            ) ?: postForm(
+                RECOMMEND_RESOURCE_WEAPI_URL,
+                NeteaseCrypto.weapi(body),
+                enriched,
+            )
+            val pid = runCatching {
+                JsonParser.parseString(recText.orEmpty()).asJsonObject
+                    .getAsJsonArray("recommend")?.firstOrNull()
+                    ?.asJsonObject?.get("id")?.asLong
+            }.getOrNull() ?: run {
+                Log.w(TAG, "dailyRecommend 没拿到推荐歌单 id: ${recText?.take(200)}")
+                return@withContext emptyList()
+            }
+            fetchPlaylistSongs(pid.toString(), enriched).also {
+                Log.d(TAG, "dailyRecommend pid=$pid n=${it.size}")
+            }
+        }
+
+    /**
+     * 私人 FM（一次性随机 3~5 首）：`/api/personal/fm`。
+     *
+     * 该接口历史上 weapi 可用、eapi 返回体结构不同，两条通道都试。
+     */
+    suspend fun personalFm(cookie: String?): List<NeteaseSong> =
+        withContext(Dispatchers.IO) {
+            val enriched = cookie?.let { enrichCookie(it) }
+            val csrf = csrfOf(cookie)
+            val body = mapOf(
+                "time" to (System.currentTimeMillis() / 1000).toString(),
+                "algorithm" to "10",
+                "wechat" to "false",
+                "csrf_token" to csrf,
+            )
+            val weapi = parseWrappedSongs(
+                postForm(PERSONAL_FM_WEAPI_URL, NeteaseCrypto.weapi(body), enriched),
+            )
+            if (weapi.isNotEmpty()) return@withContext weapi.also { Log.d(TAG, "personalFm weapi n=${it.size}") }
+            Log.w(TAG, "personalFm weapi 空: ${weapi.take(1)}")
+            val eapiText = postForm(
+                PERSONAL_FM_EAPI_URL,
+                NeteaseCrypto.eapi(PERSONAL_FM_PATH, body),
+                enriched,
+            )
+            val eapi = parseWrappedSongs(eapiText)
+            if (eapi.isEmpty()) Log.w(TAG, "personalFm eapi 原文: ${eapiText?.take(300)}")
+            Log.d(TAG, "personalFm eapi n=${eapi.size}")
+            eapi
+        }
+
+    /**
+     * 解析 `{"data":{"songs":[...]}}` / `{"data":{"list":[...]}}` 这类包裹结构。
+     *
+     * 网易云各接口的容器字段名不统一（record 用 songs/list，fm 用 data.songs），
+     * 这里统一兜住，避免为每个接口各写一个数据类。
+     */
+    private fun parseWrappedSongs(text: String?): List<NeteaseSong> {
+        if (text.isNullOrBlank()) return emptyList()
+        return runCatching {
+            val root = JsonParser.parseString(text).asJsonObject
+            if (root.get("code")?.asInt != 200) return@runCatching emptyList()
+            val data = root.getAsJsonObject("data") ?: return@runCatching emptyList()
+            val arr = data.getAsJsonArray("songs")
+                ?: data.getAsJsonArray("list")
+                ?: data.getAsJsonArray("recommend")
+                ?: return@runCatching emptyList()
+            arr.mapNotNull { el ->
+                runCatching {
+                    gson.fromJson(el.asJsonObject, NeteaseSong::class.java)
+                }.getOrNull()
+            }
+        }.getOrDefault(emptyList())
+    }
+
     private fun resolveUrl(text: String?): String? {
         if (text.isNullOrBlank()) return null
         val resp = runCatching { gson.fromJson(text, SongUrlResponse::class.java) }.getOrNull()
@@ -365,7 +560,31 @@ class NeteaseDirect @Inject constructor(
         /** 账号信息（反查 uid）。 */
         const val ACCOUNT_WEAPI_URL = "https://interface.music.163.com/weapi/w/nuser/account/get"
 
+        // ── 我的音乐资产 ──
+        /** 听歌排行（周榜）。 */
+        const val PLAY_RANK_PATH = "/api/v1/play/record"
+        const val PLAY_RANK_EAPI_URL = "https://interface.music.163.com/eapi/v1/play/record"
+
+        /** 最近播放。 */
+        const val PLAY_RECORD_WEAPI_URL = "https://interface.music.163.com/weapi/v1/play/record"
+
+        /** 每日推荐歌单列表。 */
+        const val RECOMMEND_RESOURCE_PATH = "/api/recommend/resource"
+        const val RECOMMEND_RESOURCE_EAPI_URL = "https://interface.music.163.com/eapi/recommend/resource"
+        const val RECOMMEND_RESOURCE_WEAPI_URL = "https://interface.music.163.com/weapi/recommend/resource"
+
+        /** 私人 FM。 */
+        const val PERSONAL_FM_PATH = "/api/personal/fm"
+        const val PERSONAL_FM_WEAPI_URL = "https://interface.music.163.com/weapi/personal/fm"
+        const val PERSONAL_FM_EAPI_URL = "https://interface.music.163.com/eapi/personal/fm"
+
         const val PLAYLIST_LIMIT = 1000
+
+        /** 单页歌曲数（v6 详情接口单次上限 1000）。 */
+        const val PAGE_LIMIT = 1000
+
+        /** 翻页保护上限，避免异常情况下无限翻页。 */
+        const val MAX_TRACKS = 10000
 
         const val LYRIC_PATH = "/api/song/lyric"
         const val LYRIC_URL = "https://interface.music.163.com/weapi/song/lyric"
