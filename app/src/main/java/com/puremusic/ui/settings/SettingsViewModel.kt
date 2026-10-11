@@ -107,9 +107,6 @@ class SettingsViewModel @Inject constructor(
 
     val accounts = accountStore.accounts
 
-    val svipEnabled = settingsStore.svipEnabled
-        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
-
     val serverUrl = settingsStore.serverUrl
         .stateIn(viewModelScope, SharingStarted.Eagerly, SettingsStore.DEFAULT_SERVER_URL)
 
@@ -121,10 +118,6 @@ class SettingsViewModel @Inject constructor(
         }
         normalized = normalized.trimEnd('/')
         viewModelScope.launch { settingsStore.setServerUrl(normalized) }
-    }
-
-    fun setSvip(enabled: Boolean) {
-        viewModelScope.launch { settingsStore.setSvip(enabled) }
     }
 
     fun updateTheme(config: ThemeConfig) {

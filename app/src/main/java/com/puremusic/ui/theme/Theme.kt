@@ -1,6 +1,5 @@
 package com.puremusic.ui.theme
 
-import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
@@ -9,7 +8,6 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
@@ -110,12 +108,9 @@ fun PureMusicTheme(
     coverColor: Color? = null,
     content: @Composable () -> Unit
 ) {
-    // 封面主色驱动优先：正在播放时全局主题色跟随当前封面主色（animateColorAsState 由各页提供平滑过渡）
-    val seedColor = when {
-        coverColor != null -> coverColor
-        themeConfig.seedColor != 0L -> Color(themeConfig.seedColor.toInt())
-        else -> Color(0xFFFF6B00) // 柠檬橙色兜底
-    }
+    // 全局配色唯一来源 = 当前播放封面的主色（AppRoot 恒传入）。
+    // 无封面时退到柠檬橙，避免冷启动瞬间整个 App 是灰的。
+    val seedColor = coverColor ?: Color(0xFFFF6B00)
 
     val systemDark = isSystemInDarkTheme()
     val isLight = when (themeConfig.darkMode) {
@@ -124,54 +119,42 @@ fun PureMusicTheme(
         DarkMode.SYSTEM -> !systemDark
     }
 
-    // dynamicColor 系统取色仅在「无封面主色」时兜底生效；有封面时一律以封面主色为准
-    val colorScheme = if (themeConfig.dynamicColor && coverColor == null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-        val context = LocalContext.current
-        if (isLight) dynamicLightColorScheme(context) else dynamicDarkColorScheme(context)
+    val colorScheme = if (isLight) {
+        // primary 稍作加深：种子色直接当 primary 时在浅色背景上文字对比度不足（尤其亮橙/亮黄）
+        lightColorScheme(
+            primary = seedColor.mix(Color.Black, 0.12f),
+            onPrimary = Color.White,
+            primaryContainer = seedColor.mix(Color.White, 0.78f),
+            onPrimaryContainer = seedColor.mix(Color.Black, 0.82f),
+            secondaryContainer = seedColor.mix(Color.White, 0.88f),
+            onSecondaryContainer = seedColor.mix(Color.Black, 0.78f),
+            tertiaryContainer = seedColor.mix(Color.White, 0.84f),
+            onTertiaryContainer = seedColor.mix(Color.Black, 0.80f),
+            surface = Color(0xFFF7F7FA),
+            surfaceContainer = Color(0xFFF1F1F5),
+            surfaceContainerHigh = Color(0xFFEAEAF0),
+            surfaceContainerHighest = Color(0xFFE3E3EA),
+            background = Color(0xFFF7F7FA),
+            onSurface = Color(0xFF1B1B1F),
+            onSurfaceVariant = Color(0xFF565662),
+            outline = Color(0xFF8A8A96),
+            outlineVariant = Color(0xFFC6C6D0),
+        )
     } else {
-        if (isLight) {
-            // primary 稍作加深：种子色直接当 primary 时在浅色背景上文字对比度不足（尤其亮橙/亮黄）
-            lightColorScheme(
-                primary = seedColor.mix(Color.Black, 0.12f),
-                onPrimary = Color.White,
-                primaryContainer = seedColor.mix(Color.White, 0.78f),
-                onPrimaryContainer = seedColor.mix(Color.Black, 0.82f),
-                secondaryContainer = seedColor.mix(Color.White, 0.88f),
-                onSecondaryContainer = seedColor.mix(Color.Black, 0.78f),
-                tertiaryContainer = seedColor.mix(Color.White, 0.84f),
-                onTertiaryContainer = seedColor.mix(Color.Black, 0.80f),
-                surface = Color(0xFFF7F7FA),
-                surfaceContainer = Color(0xFFF1F1F5),
-                surfaceContainerHigh = Color(0xFFEAEAF0),
-                surfaceContainerHighest = Color(0xFFE3E3EA),
-                background = Color(0xFFF7F7FA),
-                onSurface = Color(0xFF1B1B1F),
-                onSurfaceVariant = Color(0xFF565662),
-                outline = Color(0xFF8A8A96),
-                outlineVariant = Color(0xFFC6C6D0),
-            )
-        } else {
-            // AMOLED 纯黑：surface/background 全黑，容器近似纯黑（PixelPlayer 式 OLED 优化）
-            val black = Color(0xFF000000)
-            val surface = if (themeConfig.amoledBlack) black else Color(0xFF101014)
-            val surfaceContainer = if (themeConfig.amoledBlack) Color(0xFF0D0D0F) else Color(0xFF1A1A20)
-            val surfaceContainerHigh = if (themeConfig.amoledBlack) Color(0xFF161618) else Color(0xFF22222A)
-            val surfaceContainerHighest = if (themeConfig.amoledBlack) Color(0xFF1E1E20) else Color(0xFF2A2A32)
-            darkColorScheme(
-                primary = seedColor,
-                primaryContainer = seedColor.mix(Color.Black, 0.55f),
-                onPrimaryContainer = seedColor.mix(Color.White, 0.85f),
-                surface = surface,
-                surfaceContainer = surfaceContainer,
-                surfaceContainerHigh = surfaceContainerHigh,
-                surfaceContainerHighest = surfaceContainerHighest,
-                background = surface,
-                onSurface = Color(0xFFEDEDF0),
-                onSurfaceVariant = Color(0xFFA6A6B0),
-                outline = Color(0xFF8A8A96),
-                outlineVariant = Color(0xFF3A3A44),
-            )
-        }
+        darkColorScheme(
+            primary = seedColor,
+            primaryContainer = seedColor.mix(Color.Black, 0.55f),
+            onPrimaryContainer = seedColor.mix(Color.White, 0.85f),
+            surface = Color(0xFF101014),
+            surfaceContainer = Color(0xFF1A1A20),
+            surfaceContainerHigh = Color(0xFF22222A),
+            surfaceContainerHighest = Color(0xFF2A2A32),
+            background = Color(0xFF101014),
+            onSurface = Color(0xFFEDEDF0),
+            onSurfaceVariant = Color(0xFFA6A6B0),
+            outline = Color(0xFF8A8A96),
+            outlineVariant = Color(0xFF3A3A44),
+        )
     }
 
     // 字体缩放 + 布局密度：通过替换 LocalDensity 全局生效，无需逐个页面改数值。

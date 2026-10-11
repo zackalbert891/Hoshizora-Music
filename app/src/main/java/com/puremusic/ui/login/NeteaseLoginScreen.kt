@@ -31,13 +31,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Key
-import androidx.compose.material.icons.filled.Language
-import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MusicNote
-import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.QrCode2
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Sms
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -62,10 +58,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -84,13 +77,13 @@ private val BrandRedDeep = Color(0xFFB92929)
 /**
  * 网易云登录页。
  *
- * 四种方式并列（一键登录 / 扫码 / 手机号 / Cookie 导入），但**推荐顺序是有讲究的**：
- * 网易云对第三方客户端的登录接口有 -460/-462 风控（IP 与设备维度，换机器换网络就可能命中），
- * 扫码与短信随时可能被拦；而「一键登录」打开的是网易云自己的官网登录页，不存在这个前提，
- * 成功率与在浏览器里登录完全一致，所以默认停在它上面，文案也直说这点。
+ * 只留两条路：**扫码**（默认）与 **Cookie 导入**。
+ * 曾经还有「一键登录」（WebView 官网）与「手机号」（短信 / 密码），真机实测都走不通 ——
+ * 官网登录页在 WebView 里拿不到 `MUSIC_U`，短信 / 密码则被 -460/-462 动态风控拦死。
+ * 摆着两个点不动的入口只会误导用户，所以宁可少给。
  *
- * 其它方式被风控拦下时不再干等：把官方给的验证页（verifyUrl + verifyToken）拉起来，
- * 用户过一次验证后带着 token 自动重放刚才那个登录动作。
+ * 扫码也可能撞上风控，此时不干等：把官方给的验证页（verifyUrl + verifyToken）拉起来，
+ * 用户过一次验证后带着 token 自动重新取码。
  */
 @Composable
 fun NeteaseLoginScreen(onBack: () -> Unit, onSuccess: () -> Unit) {
@@ -207,18 +200,16 @@ private fun BrandHeader() {
 
 // ------------------------------------------------------------------ 方式切换
 
-/** 各页签在分段控件里显示的短名（完整 label 太长，四个挤一行会截断）。 */
+/** 各页签在分段控件里显示的短名（完整 label 太长，两个挤一行会截断）。 */
 private fun shortLabel(tab: NeteaseLoginTab): String = when (tab) {
-    NeteaseLoginTab.WEB -> "一键"
     NeteaseLoginTab.QR -> "扫码"
-    NeteaseLoginTab.PHONE -> "手机号"
     NeteaseLoginTab.COOKIE -> "Cookie"
 }
 
 /**
  * 分段控件：一整条玻璃底 + 选中项填色。
  *
- * 比 ScrollableTabRow 更适合登录页 —— 四个入口地位平等、需要一眼看全，
+ * 比 ScrollableTabRow 更适合登录页 —— 入口要一眼看全，
  * 而且不会被系统 TabRow 的下划线和固定最小宽度限制住。
  */
 @Composable
@@ -279,50 +270,10 @@ private fun LoginPaneCard(vm: NeteaseLoginViewModel) {
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         when (vm.tab) {
-            NeteaseLoginTab.WEB -> WebPane(vm)
             NeteaseLoginTab.QR -> QrPane(vm)
-            NeteaseLoginTab.PHONE -> PhonePane(vm)
             NeteaseLoginTab.COOKIE -> CookiePane(vm)
         }
         StatusStrip(vm)
-    }
-}
-
-// ------------------------------------------------------------------ 一键登录
-
-/** 网易云官网登录页：走手机版 UA，页面自适应且支持验证码 / 密码 / 扫码三种官方方式。 */
-private const val NETEASE_LOGIN_URL = "https://music.163.com/#/login"
-private const val MOBILE_UA =
-    "Mozilla/5.0 (Linux; Android 13; SM-S908B) AppleWebKit/537.36 (KHTML, like Gecko) " +
-        "Chrome/120.0.0.0 Mobile Safari/537.36"
-
-/**
- * 一键登录：WebView 打开网易云官网登录页，登录成功自动取回 Cookie。
- *
- * 这是成功率最高的方式 —— 官网登录页由网易云自己维护，不存在"第三方客户端调接口"这个前提，
- * 所以不会被 -460/-462 拦。页面每次加载完成都检查 CookieManager 里有没有 `MUSIC_U`。
- */
-@Composable
-private fun WebPane(vm: NeteaseLoginViewModel) {
-    PaneHeader(
-        icon = Icons.Filled.Language,
-        title = "在网易云官网登录",
-        subtitle = "支持手机号验证码 / 密码 / 扫码，登录成功会自动返回。" +
-            "走的是网易云自己的登录页，不会被风控拦截，推荐用这个。",
-    )
-    Spacer(Modifier.height(14.dp))
-    val screenHeight = LocalConfiguration.current.screenHeightDp.dp
-    Box(
-        Modifier
-            .fillMaxWidth()
-            .height((screenHeight * 0.46f).coerceIn(320.dp, 520.dp))
-            .clip(RoundedCornerShape(18.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
-    ) {
-        AndroidView(
-            factory = { ctx -> buildLoginWebView(ctx, NETEASE_LOGIN_URL, null) { vm.onWebCookie(it) } },
-            modifier = Modifier.fillMaxSize(),
-        )
     }
 }
 
@@ -354,78 +305,6 @@ private fun QrPane(vm: NeteaseLoginViewModel) {
             modifier = Modifier.size(40.dp),
             color = BrandRed,
             strokeWidth = 3.dp,
-        )
-    }
-}
-
-// ------------------------------------------------------------------ 手机号
-
-@Composable
-private fun PhonePane(vm: NeteaseLoginViewModel) {
-    PaneHeader(
-        icon = if (vm.usePassword) Icons.Filled.Lock else Icons.Filled.Sms,
-        title = if (vm.usePassword) "密码登录" else "验证码登录",
-        subtitle = if (vm.usePassword) {
-            "密码只在本地做 MD5 后上传，不会明文传出。"
-        } else {
-            "先获取验证码，再填入登录。"
-        },
-    )
-    Spacer(Modifier.height(16.dp))
-    LoginField(
-        value = vm.phone,
-        onValueChange = { vm.phone = it },
-        label = "手机号",
-        icon = Icons.Filled.Phone,
-        keyboardType = KeyboardType.Phone,
-    )
-    Spacer(Modifier.height(12.dp))
-    if (vm.usePassword) {
-        LoginField(
-            value = vm.password,
-            onValueChange = { vm.password = it },
-            label = "密码",
-            icon = Icons.Filled.Lock,
-            visualTransformation = PasswordVisualTransformation(),
-        )
-        Spacer(Modifier.height(18.dp))
-        BrandButton("登录", !vm.busy, vm.busy, vm::loginByPassword)
-    } else {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            LoginField(
-                value = vm.code,
-                onValueChange = { vm.code = it },
-                label = "验证码",
-                icon = Icons.Filled.Sms,
-                keyboardType = KeyboardType.Number,
-                modifier = Modifier.weight(1f),
-            )
-            Spacer(Modifier.width(10.dp))
-            // 发送验证码做成胶囊按钮，和输入框同高，避免和主按钮抢视觉重量
-            Box(
-                Modifier
-                    .height(56.dp)
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(BrandRed.copy(alpha = if (vm.busy) 0.35f else 0.14f))
-                    .pressable(scaleDown = 0.95f, enabled = !vm.busy, onClick = vm::sendCode)
-                    .padding(horizontal = 16.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    if (vm.codeSent) "重发" else "获取",
-                    color = BrandRed,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.SemiBold,
-                )
-            }
-        }
-        Spacer(Modifier.height(18.dp))
-        BrandButton("登录", !vm.busy, vm.busy, vm::loginByCode)
-    }
-    TextButton(onClick = vm::togglePasswordMode) {
-        Text(
-            if (vm.usePassword) "改用短信验证码登录" else "改用密码登录",
-            fontSize = 13.sp,
         )
     }
 }
@@ -483,9 +362,6 @@ private fun LoginField(
     onValueChange: (String) -> Unit,
     label: String,
     icon: ImageVector,
-    modifier: Modifier = Modifier,
-    keyboardType: KeyboardType = KeyboardType.Text,
-    visualTransformation: VisualTransformation = VisualTransformation.None,
     minLines: Int = 1,
 ) {
     OutlinedTextField(
@@ -495,7 +371,7 @@ private fun LoginField(
         leadingIcon = { Icon(icon, contentDescription = null, modifier = Modifier.size(20.dp)) },
         singleLine = minLines == 1,
         minLines = minLines,
-        visualTransformation = visualTransformation,
+        visualTransformation = VisualTransformation.None,
         shape = RoundedCornerShape(16.dp),
         textStyle = MaterialTheme.typography.bodyMedium,
         colors = OutlinedTextFieldDefaults.colors(
@@ -505,7 +381,7 @@ private fun LoginField(
             cursorColor = BrandRed,
             unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f),
         ),
-        modifier = modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth(),
     )
 }
 
@@ -601,8 +477,10 @@ private fun StatusStrip(vm: NeteaseLoginViewModel) {
             if (vm.risk != null) {
                 TextButton(onClick = vm::showRisk) { Text("完成安全验证", fontSize = 13.sp) }
             }
-            TextButton(onClick = { vm.selectTab(NeteaseLoginTab.WEB) }) {
-                Text("改用一键登录", fontSize = 13.sp)
+            if (vm.tab != NeteaseLoginTab.COOKIE) {
+                TextButton(onClick = { vm.selectTab(NeteaseLoginTab.COOKIE) }) {
+                    Text("改用 Cookie 导入", fontSize = 13.sp)
+                }
             }
         }
     }
@@ -614,8 +492,10 @@ private fun StatusStrip(vm: NeteaseLoginViewModel) {
  * 风控验证覆盖层：官方验证页（易盾滑块 / 短信）+ 底部「我已完成」。
  *
  * 验证通过后网易云那边会把这个 verifyToken 标记为已验证，此时带着同一个 token
- * 重放刚才失败的登录动作即可放行 —— 所以这里不做任何解析，只负责把页面给用户、
+ * 重新取二维码即可放行 —— 所以这里不做任何解析，只负责把页面给用户、
  * 并在用户点「已完成」时把 token 交回去。
+ *
+ * 这是登录页里唯一剩下的 WebView：官网登录页那条路已删，但风控页必须用官方页面过。
  */
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
@@ -636,7 +516,7 @@ private fun RiskVerifyOverlay(vm: NeteaseLoginViewModel) {
                 Text("安全验证", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
             }
             AndroidView(
-                factory = { ctx -> buildLoginWebView(ctx, risk.pageUrl, null) { } },
+                factory = { ctx -> buildRiskWebView(ctx, risk.pageUrl) },
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f),
@@ -648,7 +528,7 @@ private fun RiskVerifyOverlay(vm: NeteaseLoginViewModel) {
                     .navigationBarsPadding(),
             ) {
                 Text(
-                    "在上方页面完成验证后点下面这个按钮，会自动带着验证结果重新登录",
+                    "在上方页面完成验证后点下面这个按钮，会自动带着验证结果重新获取二维码",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -663,36 +543,22 @@ private fun RiskVerifyOverlay(vm: NeteaseLoginViewModel) {
 
 // ------------------------------------------------------------------ WebView 构造
 
-@SuppressLint("SetJavaScriptEnabled")
-private fun buildLoginWebView(
-    ctx: android.content.Context,
-    url: String,
-    onError: ((String) -> Unit)?,
-    onCookie: (String) -> Unit,
-): WebView = WebView(ctx).apply {
-    settings.apply {
-        javaScriptEnabled = true
-        domStorageEnabled = true
-        databaseEnabled = true
-        // 手机版 UA：页面按窄屏布局，登录入口才是最好的那种
-        userAgentString = MOBILE_UA
-        loadWithOverviewMode = true
-        useWideViewPort = true
-    }
-    CookieManager.getInstance().setAcceptCookie(true)
-    webViewClient = object : WebViewClient() {
-        override fun onPageFinished(view: WebView, finishedUrl: String) {
-            val cookie = CookieManager.getInstance().getCookie("https://music.163.com")
-            if (!cookie.isNullOrBlank()) onCookie(cookie)
-        }
+/** 风控页固定用手机版 UA：官方验证页按窄屏布局给出的是移动版组件。 */
+private const val MOBILE_UA =
+    "Mozilla/5.0 (Linux; Android 13; SM-S908B) AppleWebKit/537.36 (KHTML, like Gecko) " +
+        "Chrome/120.0.0.0 Mobile Safari/537.36"
 
-        override fun onReceivedError(
-            view: WebView,
-            request: android.webkit.WebResourceRequest,
-            error: android.webkit.WebResourceError,
-        ) {
-            if (request.isForMainFrame) onError?.invoke("网页无法加载")
+@SuppressLint("SetJavaScriptEnabled")
+private fun buildRiskWebView(ctx: android.content.Context, url: String): WebView =
+    WebView(ctx).apply {
+        settings.apply {
+            javaScriptEnabled = true
+            domStorageEnabled = true
+            userAgentString = MOBILE_UA
+            loadWithOverviewMode = true
+            useWideViewPort = true
         }
+        CookieManager.getInstance().setAcceptCookie(true)
+        webViewClient = object : WebViewClient() {}
+        loadUrl(url)
     }
-    loadUrl(url)
-}

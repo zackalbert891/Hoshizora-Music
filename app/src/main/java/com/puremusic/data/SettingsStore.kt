@@ -33,15 +33,11 @@ class SettingsStore @Inject constructor(
 ) {
     private object Keys {
         val DARK_MODE = stringPreferencesKey("dark_mode")
-        val DYNAMIC = booleanPreferencesKey("dynamic_color")
-        val SEED = longPreferencesKey("seed_color")
-        val AMOLED = booleanPreferencesKey("amoled_black")
         val FONT_SCALE = floatPreferencesKey("font_scale")
         val CORNER_STYLE = stringPreferencesKey("corner_style")
         val LAYOUT_DENSITY = stringPreferencesKey("layout_density")
         val SERVER_URL = stringPreferencesKey("server_url")
         val BACKGROUND_IMAGE = stringPreferencesKey("background_image")
-        val SVIP = booleanPreferencesKey("svip")
         val LIQUID_GLASS = booleanPreferencesKey("liquid_glass")
         val BLUR_STRENGTH = floatPreferencesKey("blur_strength")
         /** 播放页单独的背景图（不跟随音乐库/设置页那张）。 */
@@ -54,9 +50,6 @@ class SettingsStore @Inject constructor(
         ThemeConfig(
             darkMode = runCatching { DarkMode.valueOf(p[Keys.DARK_MODE] ?: "SYSTEM") }
                 .getOrDefault(DarkMode.SYSTEM),
-            dynamicColor = p[Keys.DYNAMIC] ?: true,
-            seedColor = p[Keys.SEED] ?: 0xFF6750A4L,
-            amoledBlack = p[Keys.AMOLED] ?: false,
             fontScale = p[Keys.FONT_SCALE] ?: 1.0f,
             cornerStyle = enumOf(p[Keys.CORNER_STYLE], CornerStyle.LARGE),
             layoutDensity = enumOf(p[Keys.LAYOUT_DENSITY], LayoutDensity.NORMAL),
@@ -75,34 +68,20 @@ class SettingsStore @Inject constructor(
     val backgroundImagePath: Flow<String?> = context.settingsDataStore.data
         .map { it[Keys.BACKGROUND_IMAGE] }
 
-    val svipEnabled: Flow<Boolean> = context.settingsDataStore.data
-        .map { it[Keys.SVIP] ?: false }
-
     /** 供网络拦截器同步读取的服务器地址快照。 */
     @Volatile
     var currentServerUrl: String = DEFAULT_SERVER_URL
-        private set
-
-    /** 供取流同步读取的 SVIP 开关快照。 */
-    @Volatile
-    var currentSvip: Boolean = false
         private set
 
     init {
         scope.launch {
             serverUrl.collect { currentServerUrl = it }
         }
-        scope.launch {
-            svipEnabled.collect { currentSvip = it }
-        }
     }
 
     suspend fun setThemeConfig(config: ThemeConfig) {
         context.settingsDataStore.edit { p ->
             p[Keys.DARK_MODE] = config.darkMode.name
-            p[Keys.DYNAMIC] = config.dynamicColor
-            p[Keys.SEED] = config.seedColor
-            p[Keys.AMOLED] = config.amoledBlack
             p[Keys.FONT_SCALE] = config.fontScale
             p[Keys.CORNER_STYLE] = config.cornerStyle.name
             p[Keys.LAYOUT_DENSITY] = config.layoutDensity.name
@@ -136,10 +115,6 @@ class SettingsStore @Inject constructor(
         context.settingsDataStore.edit { p ->
             if (path == null) p.remove(Keys.BACKGROUND_IMAGE) else p[Keys.BACKGROUND_IMAGE] = path
         }
-    }
-
-    suspend fun setSvip(enabled: Boolean) {
-        context.settingsDataStore.edit { p -> p[Keys.SVIP] = enabled }
     }
 
     companion object {

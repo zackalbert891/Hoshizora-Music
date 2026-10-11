@@ -17,18 +17,15 @@ enum class LayoutDensity(val label: String, val scale: Float) {
 }
 
 /**
- * 主题配置——"极高可自定义性"的核心数据。
+ * 主题配置。
  *
- * 四个维度：深浅模式 / 取色方式 / 字体大小 / 圆角与布局密度。
+ * 注意这里**没有**主题色字段：全局配色一律由当前播放封面的主色驱动（`PureMusicTheme` 的
+ * `coverColor` 参数）。曾经存在过的 `seedColor` / `dynamicColor` / `amoledBlack` 三个字段
+ * 已随设置项一起删除 —— 前两个本来就永远不生效（AppRoot 恒传封面主色），留着只会给人
+ * 「改了却没反应」的错觉。
  */
 data class ThemeConfig(
     val darkMode: DarkMode = DarkMode.SYSTEM,
-    /** 跟随系统 Material You 动态取色（Android 12+ 生效）。 */
-    val dynamicColor: Boolean = true,
-    /** 自定义种子色（ARGB，如 0xFF6750A4）。 */
-    val seedColor: Long = 0xFF6750A4L,
-    /** AMOLED 纯黑背景。 */
-    val amoledBlack: Boolean = false,
     /** 全局字体缩放（0.85 小 / 1.0 标准 / 1.15 大）。 */
     val fontScale: Float = 1.0f,
     val cornerStyle: CornerStyle = CornerStyle.LARGE,

@@ -21,7 +21,6 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -133,14 +132,5 @@ class NowPlayingViewModel @Inject constructor(
 
     fun createPlaylistWith(name: String, song: Song) {
         viewModelScope.launch { repository.createPlaylist(name.trim(), listOf(song)) }
-    }
-
-    fun updateThemeFromCover(seedColor: Long) {
-        viewModelScope.launch {
-            val current = settingsStore.themeConfig.first()
-            if (current.seedColor != seedColor && !current.dynamicColor) {
-                settingsStore.setThemeConfig(current.copy(seedColor = seedColor))
-            }
-        }
     }
 }

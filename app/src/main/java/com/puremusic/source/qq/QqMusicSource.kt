@@ -269,13 +269,14 @@ class QqMusicSource @Inject constructor(
         // 若 cookie 无 uin（如手机号登录），回退到 musicid（QQ 音乐开放平台 uin）。
         val uin = cookieField(cookie, "uin").takeIf { it.isNotBlank() }
             ?: account?.userId?.takeIf { it.isNotBlank() } ?: "0"
-        val svip = settingsStore.currentSvip
-        // SVIP 开启时优先无损 FLAC / 320，否则 320 / 128 / m4a
-        val filenames = if (svip) {
-            listOf("F000$fileKey.flac", "M800$fileKey.mp3", "M500$fileKey.mp3", "C400$fileKey.m4a")
-        } else {
-            listOf("M800$fileKey.mp3", "M500$fileKey.mp3", "C400$fileKey.m4a")
-        }
+        // 无损 FLAC 排首位：非绿钻账号 QQ 不会返回该格式的直链，会自动往后降级到 320/128/m4a，
+        // 所以不需要（也不能）再用一个设置开关去控制——UI 上那个「SVIP 无损音质」已删。
+        val filenames = listOf(
+            "F000$fileKey.flac",
+            "M800$fileKey.mp3",
+            "M500$fileKey.mp3",
+            "C400$fileKey.m4a",
+        )
         // guid 必须与取流 cookie 里的一致；cookie 无 guid 时用本次会话稳定 guid（避免 104009 invalidq）
         val guid = cookieField(cookie, "guid").takeIf { it.isNotBlank() } ?: SESSION_GUID
         // 第一次请求

@@ -101,7 +101,7 @@ private suspend fun runNeteaseAssets() = withContext(Dispatchers.IO) {
     val a = accounts.accounts.value[MusicSourceType.NETEASE]
     if (a == null) {
         line("网易云未登录 —— 五个接口全部需要登录态（MUSIC_U）")
-        line("请先在 App「设置 → 网易云音乐 → 一键登录」完成登录再跑本探针")
+        line("请先在 App「设置 → 网易云音乐 → 扫码登录」完成登录再跑本探针")
         return@withContext
     }
     line("账号 uid=${a.userId} 昵称=${a.nickname ?: "?"} cookieLen=${a.cookie.length}")

@@ -4,7 +4,6 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -25,12 +24,14 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -59,9 +60,9 @@ import com.puremusic.model.LayoutDensity
 import com.puremusic.model.MusicSourceType
 import com.puremusic.ui.components.AppBackground
 import com.puremusic.ui.theme.pressable
-import com.puremusic.ui.theme.SeedPreset
-import com.puremusic.ui.theme.SeedPresets
 
+// Slider 的 thumb / track 覆写属于 M3 实验 API，稳定后再摘掉这个注解。
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
     backgroundImagePath: String?,
@@ -76,7 +77,6 @@ fun SettingsScreen(
     val qqAccount = accounts[MusicSourceType.QQ]
     val qqStatus by vm.qqLoginStatus.collectAsStateWithLifecycle()
     val neteaseAccount = accounts[MusicSourceType.NETEASE]
-    val svipEnabled by vm.svipEnabled.collectAsStateWithLifecycle()
 
     var showCookieDialog by remember { mutableStateOf(false) }
 
@@ -204,24 +204,12 @@ fun SettingsScreen(
                         )
                     } else {
                         DropdownMenuItem(
-                            text = { Text("一键登录") },
+                            text = { Text("扫码登录") },
                             onClick = { dismiss(); onNeteaseLogin() },
                         )
                     }
                 }
             }
-
-            Spacer(Modifier.height(24.dp))
-            Text("音质", style = MaterialTheme.typography.titleMedium)
-            Spacer(Modifier.height(8.dp))
-            SettingSwitch("SVIP 无损音质", svipEnabled) {
-                vm.setSvip(it)
-            }
-            Text(
-                "开启后优先请求无损 FLAC（需用有 SVIP 的账号登录）",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
 
             Spacer(Modifier.height(24.dp))
             Text("外观", style = MaterialTheme.typography.titleMedium)
@@ -236,12 +224,6 @@ fun SettingsScreen(
                 }
             }
             Spacer(Modifier.height(8.dp))
-            SettingSwitch("跟随系统取色", themeConfig.dynamicColor) {
-                vm.updateTheme(themeConfig.copy(dynamicColor = it))
-            }
-            SettingSwitch("AMOLED 纯黑背景", themeConfig.amoledBlack) {
-                vm.updateTheme(themeConfig.copy(amoledBlack = it))
-            }
             SettingSwitch("液态玻璃材质", themeConfig.liquidGlass) {
                 vm.updateTheme(themeConfig.copy(liquidGlass = it))
             }
@@ -261,6 +243,27 @@ fun SettingsScreen(
                     value = themeConfig.blurStrength,
                     onValueChange = { vm.updateTheme(themeConfig.copy(blurStrength = it)) },
                     valueRange = 0f..1f,
+                    // M3 默认的滑杆拇指是一根竖直胶囊（Material You 那套设计语言），
+                    // 在这个细长轨道上看着像根小杠，换成圆点更贴手。
+                    // track 同时去掉了两端的「停靠点圆点」——留着会跟拇指撞色，
+                    // 三个橙点并排看着像坏掉了，实际只有一个是手柄。
+                    thumb = { DotThumb() },
+                    track = { state ->
+                        SliderDefaults.Track(
+                            sliderState = state,
+                            colors = SliderDefaults.colors(
+                                activeTrackColor = MaterialTheme.colorScheme.primary,
+                                inactiveTrackColor = MaterialTheme.colorScheme.primaryContainer,
+                                activeTickColor = Color.Transparent,
+                                inactiveTickColor = Color.Transparent,
+                            ),
+                            drawStopIndicator = null,
+                            thumbTrackGapSize = 0.dp,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(6.dp),
+                        )
+                    },
                     modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
                 )
                 Text(
@@ -275,25 +278,6 @@ fun SettingsScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Spacer(Modifier.height(8.dp))
-            Text(
-                "主题色",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                SeedPresets.forEach { preset ->
-                    ColorDot(
-                        preset = preset,
-                        selected = themeConfig.seedColor == preset.color,
-                        onClick = {
-                            vm.updateTheme(themeConfig.copy(seedColor = preset.color, dynamicColor = false))
-                        },
-                    )
-                }
-            }
-
-            Spacer(Modifier.height(16.dp))
             Text(
                 "字体大小",
                 style = MaterialTheme.typography.bodySmall,
@@ -492,16 +476,20 @@ private fun SettingSwitch(title: String, checked: Boolean, onChecked: (Boolean) 
     }
 }
 
+/**
+ * 滑杆拇指：小圆粒。
+ *
+ * Material 3 默认给的是一根竖直胶囊（Material You 的设计语言），放在这条细长轨道上
+ * 看着像根小竖杠。换成实心圆点 + 一圈浅色描边，与 App 里其它可拖控件更一致。
+ */
 @Composable
-private fun ColorDot(preset: SeedPreset, selected: Boolean, onClick: () -> Unit) {
-    val borderColor = if (selected) MaterialTheme.colorScheme.onSurface else Color.Transparent
+private fun DotThumb() {
     Box(
         Modifier
-            .size(40.dp)
+            .size(18.dp)
             .clip(CircleShape)
-            .background(Color(preset.color.toInt()))
-            .border(if (selected) 3.dp else 1.dp, borderColor, CircleShape)
-            .clickable(onClick = onClick)
+            .background(MaterialTheme.colorScheme.primary)
+            .border(2.5.dp, MaterialTheme.colorScheme.surface, CircleShape),
     )
 }
 
