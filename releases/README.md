@@ -1,6 +1,44 @@
 # 归档版本
 
-## Hoshizora-v1.2.0-comment-20261011-1956.apk（当前最新，已装机）
+## Hoshizora-v1.3.0-slim-20261011-2111.apk（当前最新，已装机）
+
+精简设置页与登录方式，净删 510 行（141 增 / 651 删）。
+
+| 项 | 值 |
+|---|---|
+| versionName / versionCode | 1.0.0 / 2（`build.gradle.kts` 真实值；文件名里的 v1.3.0 是归档代号） |
+| 构建时间 | 2026-10-11 21:11 |
+| 大小 | 16529292 B（15.8 MB） |
+| MD5 | `6b34d20cba5959dd56df78746103b5db` |
+| SHA-256 | 见同名 `.sha256` |
+| 对应 git tag | `v1.3.0-phone`（提交 `650ebdf`） |
+
+### 这一版删了什么
+
+**登录方式**（`NeteaseLoginTab` 只剩 `QR` / `COOKIE`）
+
+- 「一键登录」（WebView 官网）——实测 WebView 里拿不到 `MUSIC_U`，点不动的死入口
+- 「手机号登录」（短信 / 密码）——被 -460/-462 动态风控拦死
+- 连带删掉 `NeteaseAuth` 的 `sendCaptcha` / `cellphoneLogin` / `parseLogin` / `riskHint`
+- **风控验证页的 WebView 保留**（`buildRiskWebView`），那是登录页唯一还在用的 WebView
+- 设置页网易云菜单文案「一键登录」→「扫码登录」
+
+**设置页外观**
+
+- 「音质 / SVIP 无损音质」——开关删了 QQ 取流会永远拿 false，改为 FLAC 直接排取流列表首位
+- 「跟随系统取色」（`dynamicColor`）与「AMOLED 纯黑背景」（`amoledBlack`）
+- 「主题色」色点区（`SeedPresets.kt` 整个文件删除）
+- `ThemeConfig` 去掉 `dynamicColor` / `seedColor` / `amoledBlack` 三个字段 ——
+  前两个本来就没用：`AppRoot` 恒传封面主色进去，`seedColor` 永远被盖住，
+  所以「换了主题色没反应」。AMOLED 则是留着字段的话，老用户已开的开关状态删不掉。
+
+**滑杆拇指**
+
+- M3 默认 thumb 是竖直胶囊，看着像根小杠 → 改 18dp 圆粒（白色描边）
+- track 同时去掉两端停靠点圆点（`drawStopIndicator = null`）+ `thumbTrackGapSize = 0`，
+  否则三个橙点并排像坏掉了
+
+## Hoshizora-v1.2.0-comment-20261011-1956.apk
 
 网易云评论区**发表 / 回复 / 删除**全部打通，真机闭环验证：发一条 → 复查服务端已落库 → 删掉。
 
