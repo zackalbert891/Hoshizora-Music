@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  启动图标背景：与二次元少女贴纸同一色系的粉紫渐变。
+  前景是一张 768×768 的圆形贴纸（drawable-nodpi/ic_launcher_foreground.png），
+  处在 108dp 画布的中心 62% —— 无论系统裁成圆形、方形还是 squircle 都不会切到主体。
+-->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <gradient
+        android:angle="315"
+        android:startColor="#FFF6FB"
+        android:centerColor="#FBDCEC"
+        android:endColor="#D8C6F7"
+        android:type="linear" />
+</shape>

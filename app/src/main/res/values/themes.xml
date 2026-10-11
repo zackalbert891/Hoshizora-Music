@@ -1,0 +1,4 @@
+<resources>
+    <!-- Compose 应用的基础窗口主题，实际 UI 全部由 Compose 绘制。 -->
+    <style name="Theme.PureMusic" parent="android:Theme.Material.Light.NoActionBar" />
+</resources>

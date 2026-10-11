@@ -1,0 +1,50 @@
+# Gradle / Android
+*.iml
+.gradle
+.kotlin
+build/
+/build
+/app/build
+/captures
+.externalNativeBuild
+.cxx
+
+# 本地配置（含本机 SDK 路径，切勿提交）
+local.properties
+.idea
+
+# 签名与密钥
+*.keystore
+*.jks
+
+# 构建产物 APK / AAB
+*.apk
+*.aab
+
+# 本地音源插件配置（含自定义接口地址，按需自行发布）
+plugin-*.json
+
+# 本地自建后端：第三方 NeteaseCloudMusicApi 的完整 clone（自带 .git，50MB）
+/server
+
+# 参考项目源码（IRISMusic / Mint-Music / musicdl 等）：仅本机对照 UI 与音源用，
+# 是别人的代码，**公开仓库必须排除**，否则等于把第三方源码发出去。
+/_ref
+
+# 本机调试脚本与登录凭据（netease_cookie.txt 含真实 MUSIC_U，绝不能进仓库）
+/tools
+
+# 真机截图与图标素材：截图里有登录后的账号信息，不随公开仓库发布
+/docs/screenshots
+/docs/icons
+# AIGC 水印与本机构建脚本也不要进仓库
+*.vbs
+
+# 本机便利脚本（快捷方式 / 启动服务器）
+create-shortcut.vbs
+server-start.vbs
+启动服务器.bat
+
+# OS
+.DS_Store
+Thumbs.db
