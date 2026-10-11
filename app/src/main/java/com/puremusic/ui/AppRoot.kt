@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
@@ -54,6 +55,7 @@ import com.puremusic.source.autoswitch.AutoSwitchSource
 import com.puremusic.ui.comments.CommentsScreen
 import com.puremusic.ui.components.AppBackground
 import com.puremusic.ui.components.MiniPlayer
+import com.puremusic.ui.discover.DiscoverScreen
 import com.puremusic.ui.theme.GlassLevel
 import com.puremusic.ui.theme.LocalGlassBackdrops
 import com.puremusic.ui.theme.LocalLiquidGlass
@@ -82,12 +84,18 @@ object Destinations {
     const val NETEASE_LOGIN = "neteaselogin"
     const val PLAYLIST = "playlist/{sourceId}/{playlistId}/{playlistName}"
     const val SEARCH = "search/{sourceId}"
-    const val COMMENTS = "comments/{songId}/{sourceId}/{title}/{artist}"
+    const val COMMENTS = "comments/{songId}/{sourceId}/{title}/{artist}/{kind}"
     /** 单个平台的云端音乐库：点 QQ 音乐就只看 QQ 音乐的歌单。 */
     const val SOURCE = "source/{sourceId}"
+    /** 发现页：推荐 / 榜单 / 歌单广场（对标 NCMusic 的「发现」）。 */
+    const val DISCOVER = "discover"
 
     fun comments(songId: String, sourceId: String, title: String, artist: String) =
-        "comments/${Uri.encode(songId)}/$sourceId/${Uri.encode(title)}/${Uri.encode(artist)}"
+        "comments/${Uri.encode(songId)}/$sourceId/${Uri.encode(title)}/${Uri.encode(artist)}/song"
+
+    /** 歌单评论区：kind=playlist 走 `R_PL_0_` 线程，歌名/歌手传空串。 */
+    fun playlistComments(playlistId: String, playlistName: String) =
+        "comments/${Uri.encode(playlistId)}/netease/${Uri.encode(playlistName)}//playlist"
 
     fun search(sourceId: String = "") = "search/$sourceId"
 
@@ -167,6 +175,15 @@ fun AppRoot() {
                                 )
                                 Spacer(Modifier.width(10.dp))
                                 FloatingNavButton(
+                                    label = "发现",
+                                    icon = Icons.Filled.Explore,
+                                    selected = route == Destinations.DISCOVER,
+                                    onClick = {
+                                        navController.navigate(Destinations.DISCOVER) { launchSingleTop = true }
+                                    },
+                                )
+                                Spacer(Modifier.width(10.dp))
+                                FloatingNavButton(
                                     label = "设置",
                                     icon = Icons.Filled.Settings,
                                     selected = route == Destinations.SETTINGS,
@@ -213,6 +230,7 @@ fun AppRoot() {
                         },
                         onOpenSource = { sourceId -> navController.navigate(Destinations.source(sourceId)) },
                         onSearch = { navController.navigate(Destinations.search()) },
+                        onOpenDiscover = { navController.navigate(Destinations.DISCOVER) },
                         onOpenNowPlaying = { navController.navigate(Destinations.NOW_PLAYING) },
                     )
                 }
@@ -275,6 +293,10 @@ fun AppRoot() {
                         navArgument("sourceId") { type = NavType.StringType },
                         navArgument("title") { type = NavType.StringType },
                         navArgument("artist") { type = NavType.StringType },
+                        navArgument("kind") {
+                            type = NavType.StringType
+                            defaultValue = "song"
+                        },
                     ),
                 ) {
                     CommentsScreen(
@@ -316,6 +338,21 @@ fun AppRoot() {
                         playlistId = playlistId,
                         name = name,
                         onBack = { navController.popBackStack() },
+                        // 歌单评论走 R_PL_0_ 线程，与歌曲评论是同一份实现、不同的前缀
+                        onOpenComments = { pid, pname ->
+                            navController.navigate(Destinations.playlistComments(pid, pname))
+                        },
+                        onOpenNowPlaying = { navController.navigate(Destinations.NOW_PLAYING) },
+                        onLogin = { navController.navigate(Destinations.NETEASE_LOGIN) },
+                    )
+                }
+                composable(Destinations.DISCOVER) {
+                    DiscoverScreen(
+                        onBack = { navController.popBackStack() },
+                        onOpenPlaylist = { sId, id, pname ->
+                            navController.navigate(Destinations.playlist(sId, id, pname))
+                        },
+                        onOpenNowPlaying = { navController.navigate(Destinations.NOW_PLAYING) },
                     )
                 }
                 composable(

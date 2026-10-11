@@ -22,19 +22,32 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
-/** 评论页入参：歌曲 id + 来源平台 + 展示用的标题/歌手。 */
+/**
+ * 评论页入参：资源 id + 来源平台 + 展示用的标题/歌手。
+ *
+ * [kind] 区分「歌曲评论区」与「歌单评论区」：网易云两者的 threadId 前缀不同
+ * （`R_SO_4_` / `R_PL_0_`），走错前缀会拿到空评论区。
+ */
 data class CommentsArgs(
     val songId: String,
     val sourceId: String,
     val title: String,
     val artist: String,
+    /** 空 = 歌曲评论；`playlist` = 歌单评论。 */
+    val kind: String = "",
 ) {
+    /** 是否歌单评论区。 */
+    val isPlaylist: Boolean get() = kind == KIND_PLAYLIST
+
     companion object {
+        const val KIND_PLAYLIST = "playlist"
+
         fun from(savedStateHandle: SavedStateHandle): CommentsArgs = CommentsArgs(
             songId = savedStateHandle.get<String>("songId").orEmpty(),
             sourceId = savedStateHandle.get<String>("sourceId").orEmpty(),
             title = savedStateHandle.get<String>("title").orEmpty(),
             artist = savedStateHandle.get<String>("artist").orEmpty(),
+            kind = savedStateHandle.get<String>("kind").orEmpty(),
         )
     }
 }
@@ -59,6 +72,8 @@ data class CommentsUiState(
     val hint: String? = null,
     /** 这个评论区能不能**真的**点赞：网易云通道 + 已登录（QQ 通道还没接写接口）。 */
     val canLike: Boolean = false,
+    /** 评论区归属：歌曲 / 歌单。歌单评论区不显示歌手那一行。 */
+    val isPlaylist: Boolean = false,
 )
 
 /**
@@ -144,6 +159,26 @@ class CommentsViewModel @Inject constructor(
             _state.value = CommentsUiState(loading = true, hasMore = true)
             resetCursor()
 
+            // ⓪ 歌单评论区：不做跨源映射，threadId 前缀换成 R_PL_0_
+            if (args.isPlaylist) {
+                val first = runCatching { fetchNeteaseFirst(playlist = true) }.getOrNull()
+                if (first == null) {
+                    _state.value = CommentsUiState(
+                        loading = false,
+                        hasMore = false,
+                        isPlaylist = true,
+                        error = "评论加载失败：网络异常",
+                    )
+                    loading = false
+                    return@launch
+                }
+                offset = first.comments.size
+                emitFirst(first)
+                loading = false
+                streamAll()
+                return@launch
+            }
+
             // ① QQ 源的歌：先走 QQ 自己的评论区
             if (args.sourceId == MusicSourceType.QQ.id && args.songId.isNotBlank()) {
                 val first = runCatching { qqComment.page(args.songId, 0, QQ_PAGE_SIZE) }.getOrNull()
@@ -171,12 +206,7 @@ class CommentsViewModel @Inject constructor(
                 loading = false
                 return@launch
             }
-            // 一页 50 条。万一接口不认大 limit 或整个失败（返回空 + total 0），
-            // 退回 20 条的经典分页再试一次，绝不把"取不到"当成"没有评论"。
-            val first = runCatching { neteaseComment.page(resolvedId!!, offset = 0, limit = PAGE_SIZE) }
-                .getOrNull()
-                ?: runCatching { neteaseComment.page(resolvedId!!, offset = 0, limit = FALLBACK_PAGE_SIZE) }
-                    .getOrNull()
+            val first = fetchNeteaseFirst(playlist = false)
             if (first == null) {
                 _state.value = CommentsUiState(
                     loading = false,
@@ -193,6 +223,24 @@ class CommentsViewModel @Inject constructor(
         }
     }
 
+    /**
+     * 网易云首屏评论：先按大 limit 取，失败或返回空再退回经典 20 条分页。
+     *
+     * 绝不把"接口没认这个 limit"当成"这首歌没有评论" —— 那会让热门歌显示成零评论。
+     */
+    private suspend fun fetchNeteaseFirst(playlist: Boolean): CommentPage? {
+        val id = if (playlist) args.songId else resolvedId.orEmpty()
+        if (id.isBlank()) return null
+        val type =
+            if (playlist) NeteaseComment.ResourceType.PLAYLIST else NeteaseComment.ResourceType.SONG
+        return runCatching { neteaseComment.resourcePage(id, type, offset = 0, limit = PAGE_SIZE) }
+            .getOrNull()
+            ?.takeIf { it.total > 0 || it.comments.isNotEmpty() || it.hot.isNotEmpty() }
+            ?: runCatching {
+                neteaseComment.resourcePage(id, type, offset = 0, limit = FALLBACK_PAGE_SIZE)
+            }.getOrNull()
+    }
+
     /** 首屏一页：渲染热评 + 最新评论，并把 id 灌进去重表。 */
     private fun emitFirst(page: CommentPage) {
         seenIds.clear()
@@ -207,12 +255,20 @@ class CommentsViewModel @Inject constructor(
             // 首屏为空说明这首确实没人评论（error 兜底文案由 UI 显示）
             hasMore = page.more && page.comments.isNotEmpty(),
             error = if (page.comments.isEmpty() && page.hot.isEmpty()) {
-                "这首歌还没有评论，来做第一个吧"
+                // 歌单与歌曲的空态文案必须分开：写「这首歌」出现在歌单评论区会很出戏。
+                // 另外网易云对非官方客户端**不返回歌单评论**（真机实测带登录态也是
+                // code=200 + total=0），所以别让用户以为是自己网络的问题。
+                if (args.isPlaylist) {
+                    "网易云暂未开放歌单评论（歌曲评论仍可用）"
+                } else {
+                    "这首歌还没有评论，来做第一个吧"
+                }
             } else null,
             mappedTitle = title,
             mappedArtist = artist,
-            platform = platformLabel,
+            platform = if (args.isPlaylist) "" else platformLabel,
             canLike = canLikeNow(),
+            isPlaylist = args.isPlaylist,
         )
     }
 
@@ -304,14 +360,16 @@ class CommentsViewModel @Inject constructor(
 
     private suspend fun fetchNextFromNetease(): Boolean {
         val current = _state.value
-        val id = resolvedId ?: return false
+        val id = if (args.isPlaylist) args.songId else (resolvedId ?: return false)
         if (!current.hasMore) return false
         _state.value = current.copy(loadingMore = true)
+        val type =
+            if (args.isPlaylist) NeteaseComment.ResourceType.PLAYLIST else NeteaseComment.ResourceType.SONG
         return runCatching {
             if (cursorMode) {
-                neteaseComment.page(id, offset = 0, limit = PAGE_SIZE, beforeTime = cursorTime)
+                neteaseComment.resourcePage(id, type, offset = 0, limit = PAGE_SIZE, beforeTime = cursorTime)
             } else {
-                neteaseComment.page(id, offset = offset, limit = PAGE_SIZE)
+                neteaseComment.resourcePage(id, type, offset = offset, limit = PAGE_SIZE)
             }
         }.fold(
             onSuccess = { page ->
@@ -385,7 +443,9 @@ class CommentsViewModel @Inject constructor(
             return
         }
         val songId = resolvedId
-        if (songId.isNullOrBlank()) {
+        // 歌单评论区没有跨源映射，songId 为空；此时 threadId 直接由 args.songId（歌单 id）拼
+        val resourceId = if (args.isPlaylist) args.songId else songId
+        if (resourceId.isNullOrBlank()) {
             applyLike(comment.id, nowLiked)
             return
         }
@@ -396,7 +456,15 @@ class CommentsViewModel @Inject constructor(
         applyLike(comment.id, nowLiked)
         likePending.add(comment.id)
         viewModelScope.launch {
-            val ok = runCatching { neteaseComment.setLike(songId, comment.id, nowLiked) }
+            val threadId = neteaseComment.threadIdFor(
+                resourceId,
+                if (args.isPlaylist) {
+                    NeteaseComment.ResourceType.PLAYLIST
+                } else {
+                    NeteaseComment.ResourceType.SONG
+                },
+            )
+            val ok = runCatching { neteaseComment.setLikeOnThread(threadId, comment.id, nowLiked) }
                 .getOrDefault(false)
             likePending.remove(comment.id)
             if (!ok) {

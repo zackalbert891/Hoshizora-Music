@@ -123,7 +123,9 @@ fun CommentsScreen(
                         Text(
                             buildString {
                                 append(viewModel.title)
-                                if (viewModel.artist.isNotBlank()) append(" · ").append(viewModel.artist)
+                                if (!state.isPlaylist && viewModel.artist.isNotBlank()) {
+                                    append(" · ").append(viewModel.artist)
+                                }
                                 if (state.platform.isNotBlank()) append(" · ").append(state.platform)
                             },
                             style = MaterialTheme.typography.bodySmall,
@@ -220,7 +222,8 @@ fun CommentsScreen(
                                         contentAlignment = Alignment.Center,
                                     ) {
                                         Text(
-                                            "这首歌还没有精彩评论",
+                                            if (state.isPlaylist) "这张歌单还没有精彩评论"
+                                            else "这首歌还没有精彩评论",
                                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                                             style = MaterialTheme.typography.bodyMedium,
                                         )

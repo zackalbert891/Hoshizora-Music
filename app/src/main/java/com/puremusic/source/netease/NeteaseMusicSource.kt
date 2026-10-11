@@ -115,7 +115,7 @@ class NeteaseMusicSource @Inject constructor(
             ?.takeIf { it.isNotBlank() && it != "0" }
 
     // ═══════════════════════════════════════════════════════════════
-    //  我的音乐资产（全部需登录态）
+    //  推荐流（榜单 / 歌单广场 / 歌单详情在 NeteaseDiscover 里）
     // ═══════════════════════════════════════════════════════════════
 
     /** 取当前登录账号；未登录返回 null。 */
@@ -126,31 +126,10 @@ class NeteaseMusicSource @Inject constructor(
         return a
     }
 
-    /** 解析 uid：优先账号已存的，回退到 cookie，再回退到服务端反查。 */
-    private suspend fun resolveUid(account: Account): String? =
-        account.userId.takeIf { it.isNotBlank() }
-            ?: cookieUid(account.cookie)
-            ?: runCatching { direct.currentUid(account.cookie) }.getOrNull()
-
-    /** 红心（我喜欢的音乐）。未登录返回空。 */
+    /** 红心（我喜欢的音乐，歌单 id 恒为 1）。未登录返回空。 */
     suspend fun likedSongs(): List<Song> = withContext(Dispatchers.IO) {
         val account = currentAccount() ?: return@withContext emptyList()
-        val uid = resolveUid(account) ?: return@withContext emptyList()
-        direct.likedSongs(uid, account.cookie).map { it.toSong() }
-    }
-
-    /** 听歌排行（周榜）。未登录返回空。 */
-    suspend fun playRank(): List<Song> = withContext(Dispatchers.IO) {
-        val account = currentAccount() ?: return@withContext emptyList()
-        val uid = resolveUid(account) ?: return@withContext emptyList()
-        direct.playRank(uid, account.cookie).map { it.toSong() }
-    }
-
-    /** 网易云最近播放。未登录返回空。 */
-    suspend fun recentPlays(): List<Song> = withContext(Dispatchers.IO) {
-        val account = currentAccount() ?: return@withContext emptyList()
-        val uid = resolveUid(account) ?: return@withContext emptyList()
-        direct.recentPlays(uid, account.cookie).map { it.toSong() }
+        direct.likedSongs(account.cookie).map { it.toSong() }
     }
 
     /** 每日推荐（30 首）。未登录返回空。 */
@@ -159,7 +138,7 @@ class NeteaseMusicSource @Inject constructor(
         direct.dailyRecommend(account.cookie).map { it.toSong() }
     }
 
-    /** 私人 FM。未登录也能返回（但无个性化）。 */
+    /** 私人 FM。匿名也能返回（但无个性化）。 */
     suspend fun personalFm(): List<Song> = withContext(Dispatchers.IO) {
         val account = accountStore.accounts.value[type]
         direct.personalFm(account?.cookie).map { it.toSong() }

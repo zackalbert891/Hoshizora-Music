@@ -41,6 +41,9 @@ data class CommentPage(
  * 只留一条通道时，换台机器/换个网络就会出现"评论全是空的、连总数都没有"，
  * 三通道实测（2026-10）均可用，代价只是多几次往返。
  *
+ * **资源类型**：[threadIdFor] 把「歌曲 id」或「歌单 id」翻译成网易云的 threadId
+ * （歌曲 `R_SO_4_` / 歌单 `R_PL_0_`），页面层不必知道这个前缀规则。
+ *
  * 展示字段对齐网易云原版：点赞数、回复数、IP 属地、被回复的内容（`//@某人：…`）、
  * 用户 VIP 标识与头像，全部由这里解析，UI 层不再碰原始字段。
  */
@@ -51,6 +54,25 @@ class NeteaseComment @Inject constructor(
 ) {
 
     private val gson = Gson()
+
+    /** 网易云的「资源」类型：歌曲与歌单共用一套评论区，只是 threadId 前缀不同。 */
+    enum class ResourceType(val prefix: String, val label: String) {
+        SONG("R_SO_4_", "歌曲"),
+        PLAYLIST("R_PL_0_", "歌单"),
+    }
+
+    /** 把资源 id 拼成网易云 threadId。 */
+    fun threadIdFor(resourceId: String, type: ResourceType = ResourceType.SONG): String =
+        type.prefix + resourceId
+
+    /** 通用取评论：[resourceId] 是歌曲 id 或歌单 id，由 [type] 决定前缀。 */
+    suspend fun resourcePage(
+        resourceId: String,
+        type: ResourceType = ResourceType.SONG,
+        offset: Int = 0,
+        limit: Int = 20,
+        beforeTime: Long = 0L,
+    ): CommentPage = page(threadIdFor(resourceId, type), offset, limit, beforeTime)
 
     /** 热评（网易云"精彩评论"）。 */
     suspend fun hotComments(songId: String, limit: Int = 30): List<Comment> =
@@ -66,23 +88,26 @@ class NeteaseComment @Inject constructor(
      * 这样打开评论页只需要两个请求，比"先热评再翻页"少一次往返；
      * offset > 0 时不再重复拉热评（热评只在首屏展示）。
      *
+     * [threadId] 传完整前缀（如 `R_SO_4_186016` 或 `R_PL_0_7452421333`），
+     * 这样歌曲评论与歌单评论走的是同一份实现。
+     *
      * [beforeTime] 是**游标翻页**：接口的 offset 只能翻到 1000 条左右，
      * 再往后就返回空（这是服务端的硬限制，不是分页写错了）。热度高的大曲
      * 动辄四五千条评论，想全部拿到就必须换成"以上一条评论的时间为游标"，
      * 也就是网易云 Web 端用的 beforeTime。
      */
     suspend fun page(
-        songId: String,
+        threadId: String,
         offset: Int = 0,
         limit: Int = 20,
         beforeTime: Long = 0L,
     ): CommentPage = withContext(Dispatchers.IO) {
         val cursor = if (beforeTime > 0L) "&beforeTime=$beforeTime" else ""
         val root = requestJson(
-            path = "/api/v1/resource/comments/R_SO_4_$songId?limit=$limit&offset=$offset$cursor",
-            eapiPath = "/api/v1/resource/comments/R_SO_4_$songId",
+            path = "/api/v1/resource/comments/$threadId?limit=$limit&offset=$offset$cursor",
+            eapiPath = "/api/v1/resource/comments/$threadId",
             eapiBody = mapOf(
-                "rid" to songId,
+                "rid" to threadId,
                 "offset" to offset,
                 "limit" to limit,
                 "total" to true,
@@ -92,18 +117,18 @@ class NeteaseComment @Inject constructor(
         val page = parsePage(root, "comments")
         android.util.Log.d(
             "NeteaseComment",
-            "page songId=$songId offset=$offset before=$beforeTime total=${page.total} " +
+            "page threadId=$threadId offset=$offset before=$beforeTime total=${page.total} " +
                 "n=${page.comments.size} more=${page.more}"
         )
         if (offset > 0 || beforeTime > 0L) return@withContext page
 
         val hotRoot = requestJson(
-            path = "/api/v1/resource/hotcomments/R_SO_4_$songId?limit=$HOT_LIMIT&offset=0",
-            eapiPath = "/api/v1/resource/hotcomments/R_SO_4_$songId",
-            eapiBody = mapOf("rid" to songId, "offset" to 0, "limit" to HOT_LIMIT, "total" to false),
+            path = "/api/v1/resource/hotcomments/$threadId?limit=$HOT_LIMIT&offset=0",
+            eapiPath = "/api/v1/resource/hotcomments/$threadId",
+            eapiBody = mapOf("rid" to threadId, "offset" to 0, "limit" to HOT_LIMIT, "total" to false),
         )
         val hot = parseList(hotRoot?.get("hotComments")?.takeIf { it.isJsonArray }?.asJsonArray, hot = true)
-        android.util.Log.d("NeteaseComment", "hot songId=$songId n=${hot.size}")
+        android.util.Log.d("NeteaseComment", "hot threadId=$threadId n=${hot.size}")
         page.copy(hot = hot)
     }
 
@@ -120,6 +145,15 @@ class NeteaseComment @Inject constructor(
      * @return true 成功；false 失败（原因见 Log，通常是风控或登录态过期）。
      */
     suspend fun setLike(songId: String, commentId: String, like: Boolean): Boolean =
+        setLikeOnThread(threadIdFor(songId, ResourceType.SONG), commentId, like)
+
+    /**
+     * 对任意资源的评论点赞 / 取消点赞（歌曲 `R_SO_4_`、歌单 `R_PL_0_` 共用）。
+     *
+     * 歌单评论区用的是同一个 `/weapi/v1/comment/like` 端点，只是 threadId 前缀不同，
+     * 所以这里把「拼 threadId」抽出来，两个场景共用一份写逻辑。
+     */
+    suspend fun setLikeOnThread(threadId: String, commentId: String, like: Boolean): Boolean =
         withContext(Dispatchers.IO) {
             val cookie = accountStore.currentNeteaseCookie
             if (cookie.isNullOrBlank()) {
@@ -129,7 +163,7 @@ class NeteaseComment @Inject constructor(
             val action = if (like) "like" else "unlike"
             val path = "/api/v1/comment/$action"
             val body = mapOf(
-                "threadId" to "R_SO_4_$songId",
+                "threadId" to threadId,
                 "commentId" to commentId,
                 "csrf_token" to csrfOf(cookie),
             )

@@ -39,6 +39,7 @@ class DiagActivity : ComponentActivity() {
     @Inject lateinit var qqComment: com.puremusic.source.qq.QqComment
     @Inject lateinit var neteaseComment: com.puremusic.source.netease.NeteaseComment
     @Inject lateinit var neteaseSource: com.puremusic.source.netease.NeteaseMusicSource
+    @Inject lateinit var neteaseDiscover: com.puremusic.source.netease.NeteaseDiscover
     @Inject @Named("plain") lateinit var http: okhttp3.OkHttpClient
 
     private val TAG = "PureMusicDiag"
@@ -107,10 +108,9 @@ private suspend fun runNeteaseAssets() = withContext(Dispatchers.IO) {
     }
 
     probe("红心") { neteaseSource.likedSongs() }
-    probe("听歌排行") { neteaseSource.playRank() }
-    probe("最近播放") { neteaseSource.recentPlays() }
     probe("每日推荐") { neteaseSource.dailyRecommend() }
     probe("私人FM") { neteaseSource.personalFm() }
+    discoverProbe(a.cookie)
 
     // release 包日志会被裁掉，探针界面是唯一可靠出口 —— 直接把服务端原文打出来。
     line("")
@@ -118,10 +118,41 @@ private suspend fun runNeteaseAssets() = withContext(Dispatchers.IO) {
     line(neteaseDirectProbe(a.cookie))
 }
 
+/**
+ * 发现层探针：榜单 / 歌单广场 / 分类 / 歌单详情 / 收藏写接口。
+ *
+ * 这几项是 2026-10-11 新加的裸 GET 通道，必须真机确认：电脑出口 IP 常被风控，
+ * 且这些接口在 eapi 上是 404（路径写法不同），只有真机能证明到底通不通。
+ */
+private suspend fun discoverProbe(cookie: String) = withContext(Dispatchers.IO) {
+    line("")
+    line("════ 发现层（榜单/歌单）════")
+    val tops = runCatching { neteaseDiscover.toplists(cookie) }.getOrDefault(emptyList())
+    line("榜单 ${tops.size} 张")
+    tops.take(4).forEach {
+        line("   · ${it.name} [${it.group}] ${it.trackCount} 首 ${it.updateFrequency}")
+    }
+    val cats = runCatching { neteaseDiscover.categories() }.getOrDefault(emptyList())
+    line("分类标签 ${cats.size} 个：${cats.take(6).joinToString { it.name }}")
+    val sq = runCatching { neteaseDiscover.squarePlaylists("华语", 3, 0, cookie) }
+        .getOrDefault(com.puremusic.source.netease.NeteaseDiscover.SquarePage())
+    line("歌单广场(华语) ${sq.playlists.size} 首 more=${sq.more} total=${sq.total}")
+    sq.playlists.take(3).forEach { line("   · ${it.name} ${it.trackCount}首 ${it.creatorName}") }
+    val first = tops.firstOrNull()
+    if (first != null) {
+        val full = runCatching { neteaseDiscover.playlistFull(first.id.toString(), cookie) }.getOrNull()
+        line("榜单详情「${first.name}」: ${full?.songs?.size ?: 0} 首 / trackCount=${full?.trackCount}")
+        line("   已收藏=${full?.subscribed} 播放=${full?.playCount} 描述=${full?.description?.take(40)}")
+        full?.songs?.take(3)?.forEach {
+            line("   · ${it.name} / ${(it.ar ?: it.artists)?.joinToString(", ") { a -> a.name }}")
+        }
+    }
+}
+
 /** 逐个接口把原始响应打出来（只截前 260 字符，够看清 code / 错误信息 / 容器字段名）。 */
 private suspend fun neteaseDirectProbe(cookie: String): String = withContext(Dispatchers.IO) {
     val sb = StringBuilder()
-    suspend fun hit(label: String, url: String, form: Map<String, String>) {
+    suspend fun hit(label: String, url: String, form: Map<String, String>, take: Int = 260) {
         val body = form.entries.joinToString("&") { (k, v) ->
             "${java.net.URLEncoder.encode(k, "UTF-8")}=${java.net.URLEncoder.encode(v, "UTF-8")}"
         }
@@ -136,7 +167,7 @@ private suspend fun neteaseDirectProbe(cookie: String): String = withContext(Dis
         val txt = runCatching {
             http.newCall(req).execute().use { it.body?.string() }
         }.getOrNull()
-        sb.appendLine("[$label] ${txt?.take(260) ?: "空响应"}")
+        sb.appendLine("[$label] ${txt?.take(take) ?: "空响应"}")
     }
     val csrf = Regex("""(?:^|;\s*)__csrf=([^;]+)""").find(cookie)?.groupValues?.get(1).orEmpty()
     val uid = Regex("""(?:^|;\s*)uid=([^;]+)""").find(cookie)?.groupValues?.get(1) ?: ""
@@ -167,6 +198,21 @@ private suspend fun neteaseDirectProbe(cookie: String): String = withContext(Dis
             mapOf("time" to (System.currentTimeMillis() / 1000).toString(),
                 "algorithm" to "10", "wechat" to "false", "csrf_token" to csrf),
         ),
+    )
+    // ↓ 2026-10-11 定论记录（勿再重复试这几条）：
+    // - 每日推荐：`/api/discovery/recommend/songs`（eapi）200 + **顶层 `recommend` 数组** ✅
+    //   老路径 `/api/recommend/resource` 已 404。
+    // - 私人 FM：`/api/personal/fm` weapi/eapi **均 404**，已下线，UI 隐藏该入口。
+    // - 歌单评论：带登录态打 `/api/v1/resource/comments/R_PL_0_<id>` 返回 code=200 但
+    //   comments 空、total=0（对「有 23 条评论」的歌单同样如此）→ 网易云不对非官方
+    //   客户端开放歌单评论；歌曲评论（R_SO_4_）照常可用。
+    hit("discoveryRecommend-raw",
+        "https://interface.music.163.com/eapi/discovery/recommend/songs",
+        com.puremusic.source.netease.NeteaseCrypto.eapi(
+            "/api/discovery/recommend/songs",
+            mapOf("limit" to "30", "csrf_token" to csrf),
+        ),
+        700,
     )
     sb.toString()
 }

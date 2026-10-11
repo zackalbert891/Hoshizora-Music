@@ -87,6 +87,7 @@ fun LibraryScreen(
     onOpenPlaylist: (sourceId: String, id: String, name: String) -> Unit,
     onOpenSource: (sourceId: String) -> Unit,
     onSearch: () -> Unit,
+    onOpenDiscover: () -> Unit,
     onOpenNowPlaying: () -> Unit = {},
 ) {
     val vm: LibraryViewModel = hiltViewModel()
@@ -94,7 +95,6 @@ fun LibraryScreen(
     val localPlaylists by vm.localPlaylists.collectAsStateWithLifecycle()
     val favorites by vm.favorites.collectAsStateWithLifecycle()
     val history by vm.history.collectAsStateWithLifecycle()
-    val neteaseAssets by vm.neteaseAssets.collectAsStateWithLifecycle()
 
     var showCreateDialog by remember { mutableStateOf(false) }
     var pendingDelete by remember { mutableStateOf<Playlist?>(null) }
@@ -179,32 +179,16 @@ fun LibraryScreen(
                 }
             }
 
-            // 网易云「我的音乐资产」：红心 / 排行 / 最近播放 / 每日推荐 / 私人FM
-            // 只有登录了网易云且确实拉到数据才显示，避免未登录时占位。
-            if (accounts[MusicSourceType.NETEASE] != null && !neteaseAssets.isEmpty) {
-                item {
-                    SectionHeader(
-                        title = "我的音乐资产",
-                        actionIcon = Icons.Filled.Refresh,
-                        actionContentDescription = "刷新",
-                        onAction = { vm.refreshNeteaseAssets() },
-                    )
-                }
-                item {
-                    NeteaseAssetStrip(
-                        loading = neteaseAssets.loading,
-                        liked = neteaseAssets.liked,
-                        rank = neteaseAssets.rank,
-                        recent = neteaseAssets.recent,
-                        daily = neteaseAssets.daily,
-                        fm = neteaseAssets.fm,
-                        onPlay = { song, list ->
-                            vm.play(song, list)
-                            onOpenNowPlaying()
-                        },
-                        onOpenAll = { onOpenSource(MusicSourceType.NETEASE.id) },
-                    )
-                }
+            // 「发现」入口：排行榜 / 歌单广场 / 每日推荐。内容多且要独立滚动，
+            // 塞进音乐库首页会把这一页拉得过长，所以走一个单独的页面。
+            item {
+                SectionHeader(title = "发现音乐")
+            }
+            item {
+                DiscoverEntryRow(
+                    onOpen = onOpenDiscover,
+                    onOpenPlaylist = { id, n -> onOpenPlaylist(MusicSourceType.NETEASE.id, id, n) },
+                )
             }
 
             // 我喜欢的 / 播放历史
@@ -331,123 +315,95 @@ fun LibraryScreen(
 }
 
 /**
- * 网易云「我的音乐资产」横滑区：五个维度各一张卡，点击封面即播（带整段队列）。
+ * 「发现音乐」入口行：排行榜 / 歌单广场 / 每日推荐三张卡。
  *
- * 设计取舍：
- * - 卡片用**纯色 surface + 细边**，不用液态玻璃——玻璃每帧重绘，横滑 5 张会明显掉帧
- *   （记忆里的教训：长列表/长横滑一律不上玻璃）。
- * - 每张卡只展示 8 首，够认全类型；想看全量走"查看全部"进平台页。
+ * 之前这里塞的是「我的音乐资产」横滑条（红心/排行/最近播放/每日推荐/FM 五张小卡），
+ * 但那一版有两个硬伤：① 只有红心有数据，另外四个接口当时拉不通，整块长期半空；
+ * ② 每张卡只有 6 首歌，看不全也点不进，只能当摆设。改成三个**能真正走通**的入口：
+ * 榜单与歌单广场都是免登录可用的完整列表（63 张榜 + 分类歌单），
+ * 每日推荐需要登录但一进去就能播放 30 首。
  */
 @Composable
-private fun NeteaseAssetStrip(
-    loading: Boolean,
-    liked: List<Song>,
-    rank: List<Song>,
-    recent: List<Song>,
-    daily: List<Song>,
-    fm: List<Song>,
-    onPlay: (Song, List<Song>) -> Unit,
-    onOpenAll: () -> Unit,
+private fun DiscoverEntryRow(
+    onOpen: () -> Unit,
+    onOpenPlaylist: (id: String, name: String) -> Unit,
 ) {
-    val groups = listOf(
-        AssetGroup("红心", liked, Color(0xFFE23A3A), Icons.Filled.Favorite),
-        AssetGroup("听歌排行", rank, Color(0xFFFF8A3D), Icons.Filled.Leaderboard),
-        AssetGroup("最近播放", recent, Color(0xFF4C8DE8), Icons.Filled.History),
-        AssetGroup("每日推荐", daily, Color(0xFF2FBF71), Icons.Filled.AutoAwesome),
-        AssetGroup("私人FM", fm, Color(0xFF7C5CE6), Icons.Filled.Radio),
-    ).filter { it.songs.isNotEmpty() }
-
-    if (groups.isEmpty()) {
-        EmptyHint(if (loading) "正在同步网易云数据…" else "暂无网易云数据")
-        return
-    }
-
     LazyRow(
         contentPadding = PaddingValues(horizontal = UiTokens.SpaceL),
         horizontalArrangement = Arrangement.spacedBy(UiTokens.SpaceM),
     ) {
-        items(groups, key = { it.title }) { group ->
-            Surface(
-                shape = RoundedCornerShape(UiTokens.RadiusLarge),
-                color = MaterialTheme.colorScheme.surface,
-                border = BorderStroke(1.dp, group.tint.copy(alpha = 0.35f)),
-                modifier = Modifier.width(168.dp),
-            ) {
-                Column(Modifier.padding(12.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            group.icon,
-                            contentDescription = null,
-                            tint = group.tint,
-                            modifier = Modifier.size(16.dp),
-                        )
-                        Spacer(Modifier.width(6.dp))
-                        Text(
-                            group.title,
-                            style = MaterialTheme.typography.titleSmall,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.weight(1f),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        Text(
-                            "${group.songs.size}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    Spacer(Modifier.height(8.dp))
-                    // 迷你曲目榜：序号 + 歌名，纯文本最省绘制开销
-                    group.songs.take(6).forEachIndexed { i, song ->
-                        Row(
-                            Modifier
-                                .fillMaxWidth()
-                                .pressable(scaleDown = 0.98f, onClick = { onPlay(song, group.songs) })
-                                .padding(vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(
-                                "${i + 1}",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = group.tint.copy(alpha = 0.8f),
-                                modifier = Modifier.width(16.dp),
-                            )
-                            Spacer(Modifier.width(6.dp))
-                            Column(Modifier.weight(1f)) {
-                                Text(
-                                    song.title,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurface,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                                Text(
-                                    song.artist,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                            }
-                        }
-                    }
-                    Spacer(Modifier.height(6.dp))
-                    TextButton(
-                        onClick = onOpenAll,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) { Text("查看全部", style = MaterialTheme.typography.labelSmall) }
-                }
-            }
+        item(key = "disc-tl") {
+            EntryTile(
+                title = "排行榜",
+                subtitle = "63 张榜",
+                icon = Icons.Filled.Leaderboard,
+                tint = Color(0xFFFF8A3D),
+                modifier = Modifier.width(160.dp),
+                onClick = onOpen,
+            )
+        }
+        item(key = "disc-sq") {
+            EntryTile(
+                title = "歌单广场",
+                subtitle = "按分类逛",
+                icon = Icons.Filled.LibraryMusic,
+                tint = Color(0xFF4C8DE8),
+                modifier = Modifier.width(160.dp),
+                onClick = onOpen,
+            )
+        }
+        // 每日推荐直达：网易云每天给的 30 首，id 是服务端返回的推荐歌单号，这里用
+        // 固定入口进发现页的「推荐」页签，避免首页再拉一次数据。
+        item(key = "disc-daily") {
+            EntryTile(
+                title = "每日推荐",
+                subtitle = "每天 30 首",
+                icon = Icons.Filled.AutoAwesome,
+                tint = Color(0xFF2FBF71),
+                modifier = Modifier.width(160.dp),
+                onClick = onOpen,
+            )
         }
     }
 }
 
-private data class AssetGroup(
-    val title: String,
-    val songs: List<Song>,
-    val tint: Color,
-    val icon: ImageVector,
-)
+/** 发现入口小卡：纯色描边（不上玻璃，横滑时玻璃每帧重绘会掉帧）。 */
+@Composable
+private fun EntryTile(
+    title: String,
+    subtitle: String,
+    icon: ImageVector,
+    tint: Color,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    Surface(
+        shape = RoundedCornerShape(UiTokens.RadiusLarge),
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, tint.copy(alpha = 0.35f)),
+        modifier = modifier.pressable(scaleDown = 0.95f, onClick = onClick),
+    ) {
+        Row(
+            Modifier.padding(horizontal = 14.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(22.dp))
+            Spacer(Modifier.width(10.dp))
+            Column {
+                Text(
+                    title,
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Text(
+                    subtitle,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
 
 /** 顶部搜索栏：整块可点击，跳转到搜索页。玻璃胶囊 + 弹簧按压。 */
 @Composable
