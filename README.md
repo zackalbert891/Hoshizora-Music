@@ -15,15 +15,16 @@
 
 - **本地音乐**：扫描系统媒体库（MediaStore），离线播放。
 - **多音源在线播放**：聚合多个在线音乐源，统一搜索、播放与歌词，原源不可用时自动切换候选（跨源自动换源）。
-- **账号登录**：支持多种登录方式（WebView 官网登录 / 扫码 / 手机号验证码），登录态用于云端歌单与需要鉴权的接口。
-- **评论与点赞**：在线评论浏览与真实点赞（需要登录态）。
+- **账号登录**：支持扫码登录与 Cookie 导入，登录态用于云端歌单与需要鉴权的接口。
+- **评论**：在线评论浏览、点赞，以及发表 / 回复 / 删除自己的评论（需要登录态）。
+- **内容发现**：网易云排行榜（63 张）、歌单广场（33 个分类）、歌单详情、收藏同步、每日推荐。
 - **播放页全面屏适配**：`enableEdgeToEdge` + `safeDrawing` 避让，HorizontalPager 封面 ↔ 歌词双页切换。
 - **歌词**：LRC 解析 + 逐行滚动高亮 + 两级缓存（内存 + 磁盘）。
 - **跨源自动换源**：原源取流失败 / 播放运行时出错时，自动在其它音源搜索同曲候选并切换（标题 / 歌手相似度评分，坏 URL 失败缓存 + Range 校验）。
 - **本地音乐库（Room 持久化）**：自建歌单（增删歌 / 删除歌单）、「我喜欢的」收藏、播放历史，全部落库，重启不丢；在线歌曲可一键收藏或加入本地歌单。
 - **音乐库首页**：大标题 + 圆角搜索栏 + 渐变色快捷入口（我喜欢的 / 播放历史）+ 「最近播放」横滑卡片（点封面直接续播）+ 歌单两列网格。
 - **播放控制**：倍速 0.5x ~ 2.0x、睡眠定时（10/15/30/60 分钟后自动暂停）。
-- **高度自定义主题**：跟随系统 / 浅色 / 深色、Material You 动态取色、自定义种子色、AMOLED 纯黑、字体大小（小/标准/大）、圆角风格（标准/大圆角/超大）、布局密度（紧凑/标准/宽松）。
+- **高度自定义主题**：浅色 / 深色、字体大小（小/标准/大）、圆角风格（标准/大圆角/超大）、布局密度（紧凑/标准/宽松）、自定义背景图（可拖动缩放框选裁剪）与背景模糊强度。主题色自动取自当前播放封面。
 - **前台播放**：Media3 前台服务 + 媒体通知，支持后台 / 锁屏播放。
 
 ## 技术栈
@@ -74,35 +75,32 @@ Hoshizora/
 **环境要求**：JDK 17（AGP 8.5 要求）、Gradle 8.9（仓库已含 wrapper）。
 
 ```bash
-# 方式一：命令行（离线依赖已就绪时）
 ./gradlew assembleDebug
 # 产物：app/build/outputs/apk/debug/app-debug.apk
-
-# 方式二：Android Studio
-# 用 JDK 17 打开本目录 → 等待 Gradle 同步 → Run
 ```
 
-> 仓库内 `settings.gradle.kts` 已配置镜像优先、官方仓库兜底，首次构建需联网拉取依赖。
+或用 Android Studio 以 JDK 17 打开本目录，等待 Gradle 同步后 Run。
 
-**关于代理**：`gradle.properties` 的 `org.gradle.jvmargs` 中可能带有本机 HTTP 代理与
-`-Djavax.net.ssl.trustStoreType=WINDOWS-ROOT`（让 JVM 直接信任 Windows 系统证书库，解决代理环境下的
-PKIX 证书链错误）。若无代理或使用系统 JDK，请删掉这几个 `-D` 参数：
-
-```properties
-org.gradle.jvmargs=-Xmx4096m -Dfile.encoding=UTF-8 -XX:+UseParallelGC
-```
-
-**构建命令（本机实测可用）**：
-
-```bash
-export JAVA_HOME="E:/android-env/jdk17/jdk-17.0.20+8"
-export ANDROID_HOME="E:/android-env/sdk"
-"E:/android-env/gradle-dist/gradle-8.9/bin/gradle" assembleDebug
-```
+> `settings.gradle.kts` 已配置镜像优先、官方仓库兜底，首次构建需联网拉取依赖。
 
 安装到设备：`adb install -r app/build/outputs/apk/debug/app-debug.apk`
 
-> 亦可在 [Releases](releases) 获取已构建的安装包。
+> 已构建的安装包请从 [Releases](https://github.com/zackalbert891/Hoshizora-Music/releases) 获取，
+> 仓库内 `releases/` 只保留各版本的校验文件（`.md5` / `.sha256`）。
+
+### 在代理 / MITM 环境下构建
+
+若你的网络需要走本地代理抓包，PKIX 证书链校验会失败。给
+`gradle.properties` 的 `org.gradle.jvmargs` 加上让JVM 信任系统证书库的参数：
+
+```properties
+org.gradle.jvmargs=-Xmx4096m -Dfile.encoding=UTF-8 -XX:+UseParallelGC \
+  -Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=7890 \
+  -Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=7890 \
+  -Djavax.net.ssl.trustStoreType=WINDOWS-ROOT
+```
+
+无代理或使用非 Windows JDK 时请删掉这几个 `-D` 参数。
 
 ## 免责声明
 
