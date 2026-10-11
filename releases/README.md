@@ -1,5 +1,9 @@
 # 归档版本
 
+> **分发方式**：APK 本体**不入库**，从
+> [GitHub Releases](https://github.com/zackalbert891/Hoshizora-Music/releases) 下载。
+> 本目录只保留各版本的校验文件（`.md5` / `.sha256`），用于校验下载完整性。
+
 ## Hoshizora-v1.3.0-slim-20261011-2111.apk（当前最新，已装机）
 
 精简设置页与登录方式，净删 510 行（141 增 / 651 删）。
@@ -11,7 +15,7 @@
 | 大小 | 16529292 B（15.8 MB） |
 | MD5 | `6b34d20cba5959dd56df78746103b5db` |
 | SHA-256 | 见同名 `.sha256` |
-| 对应 git tag | `v1.3.0-phone`（提交 `650ebdf`） |
+| 对应 git tag | `v1.3.0-phone` |
 
 ### 这一版删了什么
 
@@ -116,6 +120,6 @@ md5sum dev.apk   # 应等于 ea5e9166dd1e04a7eddb0b1feb580c91
 
 ### 说明
 
-APK 已随本目录一起入库（文件名含版本与构建时间），可直接从仓库或
-[GitHub Releases](https://github.com/zackalbert891/Hoshizora-Music/releases) 获取。
-代码侧用 `git tag v1.0.0-phone` 标记对应提交。
+APK 不再随仓库入库，统一从
+[GitHub Releases](https://github.com/zackalbert891/Hoshizora-Music/releases) 获取
+（文件名含版本与构建时间）。代码侧用 git tag 标记对应提交。
