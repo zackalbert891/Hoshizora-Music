@@ -73,7 +73,7 @@ import com.puremusic.ui.theme.pressable
  * 所以从「排行榜」和「歌单广场」点进来是同一份代码、同一条取数路径，
  * 只是榜单没有「创建者/描述/收藏」这些字段（值自然为空）。
  *
- * 版式对标 NCMusic：大封面头图 → 名称/计数 → 播放全部 + 收藏 + 评论 → 标签 → 描述 → 曲目。
+ * 版式对标 NCMusic：大封面头图 → 名称/计数 → 播放全部 + 收藏 → 标签 → 描述 → 曲目。
  */
 @Composable
 fun PlaylistDetailScreen(
@@ -81,7 +81,6 @@ fun PlaylistDetailScreen(
     playlistId: String,
     name: String,
     onBack: () -> Unit,
-    onOpenComments: (playlistId: String, playlistName: String) -> Unit = { _, _ -> },
     onOpenNowPlaying: () -> Unit = {},
     onLogin: () -> Unit = {},
 ) {
@@ -148,10 +147,6 @@ fun PlaylistDetailScreen(
                     vm.playAll()
                     onOpenNowPlaying()
                 },
-                onOpenComments = {
-                    onOpenComments(playlistId, detail.name.ifBlank { name })
-                },
-                commentCountHint = vm.songs.size,
             )
         }
 
@@ -274,8 +269,6 @@ private fun PlaylistHeader(
     subscribing: Boolean,
     onToggleSubscribe: () -> Unit,
     onPlayAll: () -> Unit,
-    onOpenComments: () -> Unit,
-    commentCountHint: Int,
 ) {
     val shape = RoundedCornerShape(UiTokens.RadiusCard)
     Box(
@@ -390,20 +383,12 @@ private fun PlaylistHeader(
                         onClick = { if (!subscribing) onToggleSubscribe() },
                     )
                 }
-
-                Spacer(Modifier.width(UiTokens.SpaceM))
-                RoundAction(
-                    icon = Icons.Filled.ChatBubbleOutline,
-                    label = "评论",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    onClick = onOpenComments,
-                )
             }
         }
     }
 }
 
-/** 描边圆钮：图标 + 小字（收藏数 / 「评论」）。 */
+/** 描边圆钮：图标 + 小字（收藏数）。 */
 @Composable
 private fun RoundAction(
     icon: androidx.compose.ui.graphics.vector.ImageVector,

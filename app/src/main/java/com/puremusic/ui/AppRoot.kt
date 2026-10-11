@@ -84,18 +84,14 @@ object Destinations {
     const val NETEASE_LOGIN = "neteaselogin"
     const val PLAYLIST = "playlist/{sourceId}/{playlistId}/{playlistName}"
     const val SEARCH = "search/{sourceId}"
-    const val COMMENTS = "comments/{songId}/{sourceId}/{title}/{artist}/{kind}"
+    const val COMMENTS = "comments/{songId}/{sourceId}/{title}/{artist}"
     /** 单个平台的云端音乐库：点 QQ 音乐就只看 QQ 音乐的歌单。 */
     const val SOURCE = "source/{sourceId}"
     /** 发现页：推荐 / 榜单 / 歌单广场（对标 NCMusic 的「发现」）。 */
     const val DISCOVER = "discover"
 
     fun comments(songId: String, sourceId: String, title: String, artist: String) =
-        "comments/${Uri.encode(songId)}/$sourceId/${Uri.encode(title)}/${Uri.encode(artist)}/song"
-
-    /** 歌单评论区：kind=playlist 走 `R_PL_0_` 线程，歌名/歌手传空串。 */
-    fun playlistComments(playlistId: String, playlistName: String) =
-        "comments/${Uri.encode(playlistId)}/netease/${Uri.encode(playlistName)}//playlist"
+        "comments/${Uri.encode(songId)}/$sourceId/${Uri.encode(title)}/${Uri.encode(artist)}"
 
     fun search(sourceId: String = "") = "search/$sourceId"
 
@@ -292,10 +288,6 @@ fun AppRoot() {
                         navArgument("sourceId") { type = NavType.StringType },
                         navArgument("title") { type = NavType.StringType },
                         navArgument("artist") { type = NavType.StringType },
-                        navArgument("kind") {
-                            type = NavType.StringType
-                            defaultValue = "song"
-                        },
                     ),
                 ) {
                     CommentsScreen(
@@ -337,10 +329,6 @@ fun AppRoot() {
                         playlistId = playlistId,
                         name = name,
                         onBack = { navController.popBackStack() },
-                        // 歌单评论走 R_PL_0_ 线程，与歌曲评论是同一份实现、不同的前缀
-                        onOpenComments = { pid, pname ->
-                            navController.navigate(Destinations.playlistComments(pid, pname))
-                        },
                         onOpenNowPlaying = { navController.navigate(Destinations.NOW_PLAYING) },
                         onLogin = { navController.navigate(Destinations.NETEASE_LOGIN) },
                     )

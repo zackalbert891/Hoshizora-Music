@@ -34,15 +34,27 @@ data class CommentPage(
     val more: Boolean = false,
 )
 
+/** 发评论结果：成功带服务端返回的 commentId 与新评论，失败带可直接展示的中文原因。 */
+sealed interface PostResult {
+    data class Success(val commentId: String, val comment: Comment?) : PostResult
+    data class Failure(val reason: String) : PostResult
+}
+
+/** 网易云的「资源」类型：歌曲评论区的 threadId 前缀。 */
+private const val THREAD_PREFIX = "R_SO_4_"
+
+/** 网易云评论正文上限，超了服务端会直接拒（输入栏据此提前拦）。 */
+const val MAX_COMMENT_LEN = 1000
+
 /**
- * 网易云评论数据源（只读）。
+ * 网易云评论数据源：读（热评 / 最新 / 全量串流）+ 写（点赞 / 发表 / 删除）。
  *
- * 三条通道串行兜底（详见 [requestJson]）：裸 GET → weapi → eapi(interface / interface3)。
+ * 读的三条通道串行兜底（详见 [requestJson]）：裸 GET → weapi → eapi(interface / interface3)。
  * 只留一条通道时，换台机器/换个网络就会出现"评论全是空的、连总数都没有"，
  * 三通道实测（2026-10）均可用，代价只是多几次往返。
  *
- * **资源类型**：[threadIdFor] 把「歌曲 id」或「歌单 id」翻译成网易云的 threadId
- * （歌曲 `R_SO_4_` / 歌单 `R_PL_0_`），页面层不必知道这个前缀规则。
+ * 写的规矩更硬（详见 [writeJson]）：必须登录 Cookie + 必须伪装安卓身份，
+ * 否则一律 250「设备存在安全风险」。
  *
  * 展示字段对齐网易云原版：点赞数、回复数、IP 属地、被回复的内容（`//@某人：…`）、
  * 用户 VIP 标识与头像，全部由这里解析，UI 层不再碰原始字段。
@@ -53,26 +65,18 @@ class NeteaseComment @Inject constructor(
     private val accountStore: AccountStore,
 ) {
 
-    private val gson = Gson()
+private val gson = Gson()
 
-    /** 网易云的「资源」类型：歌曲与歌单共用一套评论区，只是 threadId 前缀不同。 */
-    enum class ResourceType(val prefix: String, val label: String) {
-        SONG("R_SO_4_", "歌曲"),
-        PLAYLIST("R_PL_0_", "歌单"),
-    }
+/** 把歌曲 id 拼成网易云 threadId。 */
+    fun threadIdFor(songId: String): String = THREAD_PREFIX + songId
 
-    /** 把资源 id 拼成网易云 threadId。 */
-    fun threadIdFor(resourceId: String, type: ResourceType = ResourceType.SONG): String =
-        type.prefix + resourceId
-
-    /** 通用取评论：[resourceId] 是歌曲 id 或歌单 id，由 [type] 决定前缀。 */
+    /** 取评论：[songId] 是网易云歌曲 id。 */
     suspend fun resourcePage(
-        resourceId: String,
-        type: ResourceType = ResourceType.SONG,
+        songId: String,
         offset: Int = 0,
         limit: Int = 20,
         beforeTime: Long = 0L,
-    ): CommentPage = page(threadIdFor(resourceId, type), offset, limit, beforeTime)
+    ): CommentPage = page(threadIdFor(songId), offset, limit, beforeTime)
 
     /** 热评（网易云"精彩评论"）。 */
     suspend fun hotComments(songId: String, limit: Int = 30): List<Comment> =
@@ -88,8 +92,9 @@ class NeteaseComment @Inject constructor(
      * 这样打开评论页只需要两个请求，比"先热评再翻页"少一次往返；
      * offset > 0 时不再重复拉热评（热评只在首屏展示）。
      *
-     * [threadId] 传完整前缀（如 `R_SO_4_186016` 或 `R_PL_0_7452421333`），
-     * 这样歌曲评论与歌单评论走的是同一份实现。
+     * [threadId] 传**完整前缀**（`R_SO_4_` + 歌曲 id），也就是 [resourcePage] 拼好的那种。
+     * 直接传裸歌曲 id 会读不到任何评论（网易云按 threadId 路由资源）—— 这是个很容易踩的坑，
+     * 所以对外的正常入口只有 [resourcePage]。
      *
      * [beforeTime] 是**游标翻页**：接口的 offset 只能翻到 1000 条左右，
      * 再往后就返回空（这是服务端的硬限制，不是分页写错了）。热度高的大曲
@@ -145,63 +150,149 @@ class NeteaseComment @Inject constructor(
      * @return true 成功；false 失败（原因见 Log，通常是风控或登录态过期）。
      */
     suspend fun setLike(songId: String, commentId: String, like: Boolean): Boolean =
-        setLikeOnThread(threadIdFor(songId, ResourceType.SONG), commentId, like)
+        withContext(Dispatchers.IO) {
+            val body = mapOf(
+                "threadId" to threadIdFor(songId),
+                "commentId" to commentId,
+                "csrf_token" to csrfOrFail() ?: return@withContext false,
+            )
+            writeJson("/v1/comment/${if (like) "like" else "unlike"}", body).first == 200
+        }
 
     /**
-     * 对任意资源的评论点赞 / 取消点赞（歌曲 `R_SO_4_`、歌单 `R_PL_0_` 共用）。
+     * **发表评论 / 回复某条评论**（真写服务端）。
      *
-     * 歌单评论区用的是同一个 `/weapi/v1/comment/like` 端点，只是 threadId 前缀不同，
-     * 所以这里把「拼 threadId」抽出来，两个场景共用一份写逻辑。
+     * 端点：weapi `https://music.163.com/weapi/resource/comments/add`，
+     * 失败再走 eapi `interface(3) /eapi/resource/comments/add`。与 NeteaseCloudMusicApi 一致：
+     * - `type=1` 固定为歌曲；
+     * - `threadId` = `R_SO_4_` + 歌曲 id；
+     * - `content` 正文，**网易云的表情就是正文里的方括号文本**（如 `[开心]`），
+     *   所以表情不需要任何接口，客户端直接拼字符串即可；
+     * - `replyCommentId` + `replyToUserId` 非 0 时即为「回复」，网易云会把它渲染成楼中楼。
+     *
+     * 服务端成功时会回吐 `comment` 字段（新评论对象），直接拿来插进列表最准 ——
+     * 免得自己拼一条假数据（commentId、userId、time 全是编的，回复/删除立刻会失效）。
      */
-    suspend fun setLikeOnThread(threadId: String, commentId: String, like: Boolean): Boolean =
-        withContext(Dispatchers.IO) {
-            val cookie = accountStore.currentNeteaseCookie
-            if (cookie.isNullOrBlank()) {
-                Log.w(TAG, "点赞失败：未登录网易云")
-                return@withContext false
-            }
-            val action = if (like) "like" else "unlike"
-            val path = "/api/v1/comment/$action"
-            val body = mapOf(
-                "threadId" to threadId,
-                "commentId" to commentId,
-                "csrf_token" to csrfOf(cookie),
-            )
-            // 写操作必须用**安卓客户端身份**：实测（2026-10-11 真机）用 os=pc / PC UA 打点赞
-            // 一律返回 code=250「系统检测到您的设备存在安全风险」，换 os=android + 安卓 UA 立刻 200。
-            // 读评论不受影响（os=pc 一直可用），所以只有这里切身份。
-            val full = androidCookie(cookie)
-            // 每条通道都把响应打出来：点赞是写接口，失败原因（风控码 / 参数错 / 空 body）
-            // 只有真机 logcat 能看到，电脑上打网易云一律 -460/-462，看不到真实 code。
-            fun attempt(tag: String, url: String, text: String): Boolean {
-                val code = codeOf(text)
-                Log.d(TAG, "点赞[$tag] code=$code body=${text.take(160)}")
-                return code == 200
-            }
-
-            // ① weapi：官方客户端同款，命中率最高
-            if (attempt(
-                    "weapi",
-                    "weapi",
-                    weapiPost("https://music.163.com/weapi/v1/comment/$action", body, full, ANDROID_UA),
-                )
-            ) return@withContext true
-            // ② eapi：某些网络下 weapi 域名被风控，interface 域名仍然放行
-            for (host in EAPI_HOSTS) {
-                if (attempt(
-                        "eapi",
-                        host,
-                        eapiPost("$host/eapi/v1/comment/$action", path, body, full, ANDROID_UA),
-                    )
-                ) return@withContext true
-            }
-            // ③ 裸 /api 路径 + weapi 加密：老版本服务端就认这个
-            if (attempt("api", path, weapiPost("https://music.163.com$path", body, full, ANDROID_UA))) {
-                return@withContext true
-            }
-            Log.w(TAG, "点赞失败 comment=$commentId like=$like 全通道非 200")
-            false
+    suspend fun postComment(
+        songId: String,
+        content: String,
+        replyToCommentId: String = "",
+        replyToUserId: Long = 0L,
+    ): PostResult = withContext(Dispatchers.IO) {
+        val cookie = accountStore.currentNeteaseCookie
+        if (cookie.isNullOrBlank()) {
+            return@withContext PostResult.Failure("请先登录网易云账号")
         }
+        val text = content.trim()
+        if (text.isEmpty()) return@withContext PostResult.Failure("评论内容不能为空")
+        if (text.length > MAX_COMMENT_LEN) {
+            return@withContext PostResult.Failure("评论最多 $MAX_COMMENT_LEN 字")
+        }
+        val threadId = threadIdFor(songId)
+        val body = buildMap {
+            put("type", 1)
+            put("threadId", threadId)
+            put("content", text)
+            put("csrf_token", csrfOrFail().orEmpty())
+            // 网易云前端对回复就是塞这两个字段：0 表示不是回复
+            put("replyCommentId", replyToCommentId.toLongOrNull() ?: 0L)
+            put("replyToUserId", replyToUserId)
+        }
+        // 端点是 `/api/resource/comments/add`（不是 `/api/comment/add` —— 后者已 404，
+        // 2026-10-11 真机实测：/api/comment/add 三通道全 code=404「接口未找到」）。
+        val (code, raw) = writeJson("/resource/comments/add", body)
+        Log.d(TAG, "发表 code=$code replyTo=$replyToCommentId body=${raw.take(200)}")
+        if (code != 200) {
+            return@withContext PostResult.Failure(postFailReason(code))
+        }
+        val root = runCatching { gson.fromJson(raw, JsonObject::class.java) }.getOrNull()
+        // 服务端返回 comment（没有就退而用 code 判成功，列表里用本地乐观那条）
+        val commentObj = root?.get("comment")?.takeIf { it.isJsonObject }?.asJsonObject
+        val mine = commentObj?.let { parseOne(it) }
+        val newId = commentObj?.let { str(it, "commentId") }.orEmpty()
+            .ifBlank { mine?.id.orEmpty() }
+        PostResult.Success(newId, mine)
+    }
+
+    /**
+     * 删除自己发的评论（真删服务端）。
+     *
+     * 端点：weapi `https://music.163.com/weapi/resource/comments/delete`，
+     * 参数 `threadId` + `commentId` + `csrf_token`。只有删自己的才会 200，
+     * 删别人的会返回 40102「请勿删除他人评论」—— 所以 UI 只在自己评论上给删除按钮。
+     */
+    suspend fun deleteComment(songId: String, commentId: String): Boolean =
+        withContext(Dispatchers.IO) {
+            val csrf = csrfOrFail() ?: return@withContext false
+            val body = mapOf(
+                "threadId" to threadIdFor(songId),
+                "commentId" to commentId,
+                "csrf_token" to csrf,
+            )
+            val (code, raw) = writeJson("/resource/comments/delete", body)
+            Log.d(TAG, "删除评论 code=$code id=$commentId body=${raw.take(160)}")
+            code == 200
+        }
+
+    /**
+     * 写接口统一走：登录 Cookie + 安卓身份 + weapi → eapi → 裸 /api 三通道。
+     *
+     * 两条铁律都是真机踩出来的：
+     * 1. 必须带登录 Cookie（匿名一律 301 / -460 / -462）；
+     * 2. 必须 `os=android` + 安卓 UA —— 带 `os=pc` 一律 code=250「系统检测到您的设备存在安全风险」，
+     *    我们在 App 里却自称 PC 客户端本身就是风控特征（读接口用 os=pc 反而没事）。
+     *
+     * [path] 一律传**不带 /api 前缀**的路径（如 `/resource/comments/add`）：
+     * 三个通道各自拼前缀（weapi/、eapi/、裸 /api），若这里就把 `/api` 带上，
+     * weapi 通道会拼成 `/weapi/api/...` 直接 404。
+     *
+     * @return 第一个返回 200 的通道的 (code, 原始 body)；全挂则回最后一个响应的 code（多半是 250/301）。
+     */
+    private fun writeJson(path: String, body: Map<String, Any?>): Pair<Int, String> {
+        val login = accountStore.currentNeteaseCookie
+        if (login.isNullOrBlank()) return 0 to ""
+        val cookie = androidCookie(login)
+        var last = 0 to ""
+        fun take(tag: String, text: String): Boolean {
+            val code = codeOf(text)
+            last = code to text
+            Log.d(TAG, "写接口[$tag] path=$path code=$code body=${text.take(120)}")
+            return code == 200
+        }
+        // ① weapi：官方客户端同款，命中率最高
+        if (take("weapi", weapiPost("https://music.163.com/weapi$path", body, cookie, ANDROID_UA))) {
+            return last
+        }
+        // ② eapi：某些网络下 weapi 域名被风控，interface 域名仍然放行
+        for (host in EAPI_HOSTS) {
+            if (take("eapi", eapiPost("$host/eapi$path", path, body, cookie, ANDROID_UA))) {
+                return last
+            }
+        }
+        // ③ 裸 /api 路径 + weapi 加密：老版本服务端就认这个
+        if (take("api", weapiPost("https://music.163.com/api$path", body, cookie, ANDROID_UA))) return last
+        return last
+    }
+
+    /** 网易云常见失败码 → 中文提示。-460/-462 是风控，40102 是删别人的评论。 */
+    private fun postFailReason(code: Int): String = when (code) {
+        0 -> "发送失败：网络异常或登录态已过期"
+        -460, -462, 250 -> "发送失败：被网易云风控拦截，请稍后再试"
+        301 -> "发送失败：请先登录网易云账号"
+        400 -> "发送失败：内容被网易云拒绝（可能含违规词）"
+        40102 -> "只能删除自己发布的评论"
+        40501 -> "发送失败：评论频率过快，稍等一下"
+        else -> "发送失败（code=$code）"
+    }
+
+    /** 取 csrf_token；未登录返回 null，由调用方决定提示什么。 */
+    private fun csrfOrFail(): String? {
+        val cookie = accountStore.currentNeteaseCookie ?: return null
+        if (cookie.isNullOrBlank()) return null
+        val csrf = csrfOf(cookie)
+        if (csrf.isBlank()) return null
+        return csrf
+    }
 
     /** 从响应里取 code：解析不出来（空 body / 风控 HTML）返回 0。 */
     private fun codeOf(text: String): Int {
@@ -301,35 +392,41 @@ class NeteaseComment @Inject constructor(
         if (arr == null) return emptyList()
         return arr.mapNotNull { el ->
             val o = runCatching { el.asJsonObject }.getOrNull() ?: return@mapNotNull null
-            val content = str(o, "content").orEmpty()
-            if (content.isBlank()) return@mapNotNull null
-            val user = o.get("user")?.takeIf { it.isJsonObject }?.asJsonObject
-            val replied = o.get("beReplied")?.takeIf { it.isJsonArray }?.asJsonArray?.mapNotNull { r ->
-                val ro = runCatching { r.asJsonObject }.getOrNull() ?: return@mapNotNull null
-                val ru = ro.get("user")?.takeIf { it.isJsonObject }?.asJsonObject
-                val rc = str(ro, "content").orEmpty()
-                if (rc.isBlank()) null
-                else RepliedComment(str(ru ?: JsonObject(), "nickname").orEmpty().ifBlank { "该用户" }, rc)
-            }.orEmpty()
-
-            Comment(
-                id = str(o, "commentId") ?: str(o, "id") ?: content.hashCode().toString(),
-                source = CommentSource.NETEASE,
-                userName = str(user ?: JsonObject(), "nickname").orEmpty().ifBlank { "匿名用户" },
-                avatarUrl = str(user ?: JsonObject(), "avatarUrl").orEmpty(),
-                content = content.replace("\\n", "\n"),
-                likeCount = int(o, "likedCount"),
-                liked = bool(o, "liked"),
-                replyCount = int(o, "replyCount"),
-                timeText = formatTime(long(o, "time")),
-                createdMs = long(o, "time"),
-                ipLocation = o.get("ipLocation")?.takeIf { it.isJsonObject }?.asJsonObject
-                    ?.let { str(it, "location") }.orEmpty(),
-                beReplied = replied,
-                hot = hot,
-                vipType = int(user ?: JsonObject(), "vipType"),
-            )
+            parseOne(o, hot)
         }
+    }
+
+    /** 单条评论对象 → [Comment]；正文为空返回 null（服务端偶发空壳评论）。 */
+    private fun parseOne(o: JsonObject, hot: Boolean = false): Comment? {
+        val content = str(o, "content").orEmpty()
+        if (content.isBlank()) return null
+        val user = o.get("user")?.takeIf { it.isJsonObject }?.asJsonObject
+        val replied = o.get("beReplied")?.takeIf { it.isJsonArray }?.asJsonArray?.mapNotNull { r ->
+            val ro = runCatching { r.asJsonObject }.getOrNull() ?: return@mapNotNull null
+            val ru = ro.get("user")?.takeIf { it.isJsonObject }?.asJsonObject
+            val rc = str(ro, "content").orEmpty()
+            if (rc.isBlank()) null
+            else RepliedComment(str(ru ?: JsonObject(), "nickname").orEmpty().ifBlank { "该用户" }, rc)
+        }.orEmpty()
+
+        return Comment(
+            id = str(o, "commentId") ?: str(o, "id") ?: content.hashCode().toString(),
+            source = CommentSource.NETEASE,
+            userId = long(user ?: JsonObject(), "userId"),
+            userName = str(user ?: JsonObject(), "nickname").orEmpty().ifBlank { "匿名用户" },
+            avatarUrl = str(user ?: JsonObject(), "avatarUrl").orEmpty(),
+            content = content.replace("\\n", "\n"),
+            likeCount = int(o, "likedCount"),
+            liked = bool(o, "liked"),
+            replyCount = int(o, "replyCount"),
+            timeText = formatTime(long(o, "time")),
+            createdMs = long(o, "time"),
+            ipLocation = o.get("ipLocation")?.takeIf { it.isJsonObject }?.asJsonObject
+                ?.let { str(it, "location") }.orEmpty(),
+            beReplied = replied,
+            hot = hot,
+            vipType = int(user ?: JsonObject(), "vipType"),
+        )
     }
 
     /** eapi 通道：POST 到 interface / interface3 的 /eapi 前缀路径。 */

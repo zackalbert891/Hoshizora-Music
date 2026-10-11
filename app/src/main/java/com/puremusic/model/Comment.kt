@@ -39,4 +39,6 @@ data class Comment(
     val hot: Boolean = false,
     /** 用户 VIP 等级（>0 表示会员，展示角标）。 */
     val vipType: Int = 0,
+    /** 评论者 userId：用来判断是不是"我自己发的"（决定要不要给删除按钮）。 */
+    val userId: Long = 0L,
 )

@@ -62,6 +62,15 @@ class DiagActivity : ComponentActivity() {
                 "like" -> runLike()
                 "likeprobe" -> runLikeProbe()
                 "likeprobe2" -> runLikeProbe2()
+                // 发评论端到端自检（发一条 → 复查 → 自动删除）：
+                // adb shell am start -n com.puremusic/.DiagActivity -e only post
+                "post" -> runPostProbe()
+                // 手动清理某条残留评论：
+                // adb shell am start -n com.puremusic/.DiagActivity -e only del -e song <id> -e cid <评论id>
+                "del" -> runDelete(
+                    intent.getStringExtra("song").orEmpty(),
+                    intent.getStringExtra("cid").orEmpty(),
+                )
                 // 手动取消某条赞（清理探针残留 / 验证 unlike 真的写进去了）：
                 // adb shell am start -n com.puremusic/.DiagActivity -e only unlike -e song <id> -e cid <评论id>
                 "unlike" -> runUnlike(
@@ -470,9 +479,70 @@ private suspend fun runDiag() = withContext(Dispatchers.IO) {
         val ok = runCatching { neteaseComment.setLike(songId, cid, false) }.getOrDefault(false)
         line("unlike song=$songId cid=$cid → $ok")
         kotlinx.coroutines.delay(900)
-        val p = runCatching { neteaseComment.page(songId, 0, 20) }.getOrNull()
+        val p = runCatching { neteaseComment.resourcePage(songId, 0, 20) }.getOrNull()
         val c = p?.hot?.firstOrNull { it.id == cid } ?: p?.comments?.firstOrNull { it.id == cid }
         line("复查 liked=${c?.liked} 赞=${c?.likeCount}")
+    }
+
+    /**
+     * 发表评论端到端自检：发一条 → 等 1.2s 重新拉评论区找它 → 立刻删掉。
+     *
+     * 存在的意义：发评论和点赞一样是**写接口**，端点/参数/身份任何一环不对，
+     * 表现都是"没发出去"，而电脑上打网易云一律 -460/-462 根本看不出原因。
+     * 这条链跑通就等于证明 `/weapi/comment/add` + 安卓身份 + csrf 三件事都对。
+     * 最后一定删除，账号里不留垃圾评论。
+     */
+    private suspend fun runPostProbe() = withContext(Dispatchers.IO) {
+        line("════════ 发表评论自检 ════════")
+        accounts.awaitLoaded()
+        if (accounts.currentNeteaseCookie.isNullOrBlank()) {
+            line("未登录网易云，先去登录页登录再跑")
+            return@withContext
+        }
+        val songs = runCatching { neteaseSource.search("晴天 周杰伦", 0, 10) }.getOrNull().orEmpty()
+        val songId = songs.firstOrNull()?.id.orEmpty()
+        if (songId.isBlank()) {
+            line("搜不到测试用歌曲")
+            return@withContext
+        }
+        line("目标歌曲 song=$songId")
+        val text = "Hoshizora 自检评论 ${System.currentTimeMillis() % 100000}"
+        val result = neteaseComment.postComment(songId, text)
+        when (result) {
+            is com.puremusic.source.netease.PostResult.Failure -> {
+                line("❌ 发表失败：${result.reason}")
+                return@withContext
+            }
+            is com.puremusic.source.netease.PostResult.Success -> {
+                line("✅ 接口 200，回 commentId=${result.commentId}")
+                line("   服务端返回对象=${result.comment?.let { "nick=${it.userName} content=${it.content}" } ?: "无"}")
+            }
+        }
+        kotlinx.coroutines.delay(1200)
+        // 注意必须走 resourcePage（内部会补 R_SO_4_ 前缀），直接 page(songId) 会拼出裸 id 读不到东西
+        val page = runCatching { neteaseComment.resourcePage(songId, 0, 20) }.getOrNull()
+        val mine = page?.comments?.firstOrNull { it.content.contains("Hoshizora 自检评论") }
+        if (mine == null) {
+            line("❌ 复查失败：最新评论里找不到刚发的那条（total=${page?.total} n=${page?.comments?.size}）")
+            return@withContext
+        }
+        line("✅ 复查成功：${mine.userName}「${mine.content}」id=${mine.id} uid=${mine.userId}")
+        val uid = accounts.accounts.value[MusicSourceType.NETEASE]?.userId?.toLongOrNull() ?: 0L
+        line("   本机登录 uid=$uid  与评论作者一致=${mine.userId == uid}")
+        val del = neteaseComment.deleteComment(songId, mine.id)
+        line("${if (del) "✅ 已清理该评论" else "⚠️ 删除失败，请手动去网易云删掉：${mine.content}"}")
+    }
+
+    /** 手动删除指定评论（清理自检残留）：`-e only del -e song <歌曲id> -e cid <评论id>`。 */
+    private suspend fun runDelete(songId: String, cid: String) = withContext(Dispatchers.IO) {
+        line("════════ 手动删除评论 ════════")
+        if (songId.isBlank() || cid.isBlank()) {
+            line("缺参数：-e song <歌曲id> -e cid <评论id>")
+            return@withContext
+        }
+        accounts.awaitLoaded()
+        val ok = runCatching { neteaseComment.deleteComment(songId, cid) }.getOrDefault(false)
+        line("删除 song=$songId cid=$cid → ${if (ok) "成功" else "失败"}")
     }
 
     /**

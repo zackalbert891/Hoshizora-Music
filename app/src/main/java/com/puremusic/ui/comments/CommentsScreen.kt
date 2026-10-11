@@ -70,7 +70,8 @@ import com.puremusic.ui.theme.pressable
  * 评论页：**完整**的网易云评论区体验。
  *
  * 结构：歌曲信息头（共 N 条）→「精彩评论」→「最新评论」→ 后台**全量串流**（一页页连续取完），
- * 卡片包含头像、昵称、正文、被回复内容、时间、IP 属地、回复数与可点的点赞。
+ * 卡片包含头像、昵称、正文、被回复内容、时间、IP 属地、回复数、可点的点赞，
+ * 以及**发表 / 回复 / 删除自己评论**（底部固定发表栏 + 表情面板）。
  * 非网易云源的歌会先按同名同歌手映射到网易云原曲，再取该曲评论。
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -83,8 +84,9 @@ fun CommentsScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
     val listState = rememberLazyListState()
     val context = LocalContext.current
+    val myUid = viewModel.myUserId
 
-    // 点赞提示（未登录 / 失败）：弹一次即清，避免每次重组都弹
+    // 点赞 / 发表评论结果提示：弹一次即清，避免每次重组都弹
     LaunchedEffect(state.hint) {
         val hint = state.hint ?: return@LaunchedEffect
         android.widget.Toast.makeText(context, hint, android.widget.Toast.LENGTH_SHORT).show()
@@ -123,7 +125,7 @@ fun CommentsScreen(
                         Text(
                             buildString {
                                 append(viewModel.title)
-                                if (!state.isPlaylist && viewModel.artist.isNotBlank()) {
+                                if (viewModel.artist.isNotBlank()) {
                                     append(" · ").append(viewModel.artist)
                                 }
                                 if (state.platform.isNotBlank()) append(" · ").append(state.platform)
@@ -167,6 +169,21 @@ fun CommentsScreen(
                 modifier = Modifier.statusBarsPadding(),
             )
         },
+        bottomBar = {
+            CommentComposer(
+                canPost = state.canPost,
+                sending = state.sending,
+                replyTo = state.replyTo,
+                onReplyCancel = viewModel::cancelReply,
+                onSend = { text ->
+                    viewModel.sendComment(text) {
+                        // 发表成功后切到「最新评论」，否则新评论发出去用户看不见（还在热评页）
+                        tab = 1
+                    }
+                },
+                onLogin = onLogin,
+            )
+        },
     ) { padding ->
         Box(
             Modifier
@@ -178,13 +195,15 @@ fun CommentsScreen(
                     CircularProgressIndicator()
                 }
 
-                state.comments.isEmpty() && state.hot.isEmpty() -> Box(
+                // 真的一条评论都没有（且不是加载失败）：保留页签与输入栏，
+                // 因为现在能发评论了 —— 空页面正是"来发第一条"的场景。
+                state.comments.isEmpty() && state.hot.isEmpty() && state.error != null -> Box(
                     Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center,
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(
-                            state.error ?: "暂无评论",
+                            state.error ?: "评论加载失败",
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             style = MaterialTheme.typography.bodyMedium,
                         )
@@ -216,26 +235,22 @@ fun CommentsScreen(
                     ) {
                         if (tab == 0) {
                             if (state.hot.isEmpty()) {
-                                item(key = "hot-empty") {
-                                    Box(
-                                        Modifier.fillMaxWidth().padding(top = 60.dp),
-                                        contentAlignment = Alignment.Center,
-                                    ) {
-                                        Text(
-                                            if (state.isPlaylist) "这张歌单还没有精彩评论"
-                                            else "这首歌还没有精彩评论",
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            style = MaterialTheme.typography.bodyMedium,
-                                        )
-                                    }
-                                }
+                                item(key = "hot-empty") { EmptyCommentHint("还没有人在这首歌下面发过评论") }
                             } else {
                                 items(
                                     state.hot,
                                     key = { "hot:" + it.id },
                                     contentType = { "comment" },
                                 ) { c ->
-                                    CommentCard(comment = c, onLike = { viewModel.toggleLike(c) })
+                                    CommentCard(
+                                        comment = c,
+                                        isMine = myUid > 0L && c.userId == myUid,
+                                        replyToId = state.replyTo?.commentId,
+                                        canReply = state.canPost,
+                                        onLike = { viewModel.toggleLike(c) },
+                                        onReply = { viewModel.toggleReply(c) },
+                                        onDelete = { viewModel.deleteComment(c) },
+                                    )
                                 }
                                 item(key = "hot-footer") {
                                     Box(
@@ -251,12 +266,23 @@ fun CommentsScreen(
                                 }
                             }
                         } else {
+                            if (state.comments.isEmpty()) {
+                                item(key = "new-empty") { EmptyCommentHint("还没有评论，来做第一个吧") }
+                            }
                             items(
                                 state.comments,
                                 key = { "new:" + it.id },
                                 contentType = { "comment" },
                             ) { c ->
-                                CommentCard(comment = c, onLike = { viewModel.toggleLike(c) })
+                                CommentCard(
+                                    comment = c,
+                                    isMine = myUid > 0L && c.userId == myUid,
+                                    replyToId = state.replyTo?.commentId,
+                                    canReply = state.canPost,
+                                    onLike = { viewModel.toggleLike(c) },
+                                    onReply = { viewModel.toggleReply(c) },
+                                    onDelete = { viewModel.deleteComment(c) },
+                                )
                             }
                             item(key = "footer") {
                                 CommentsFooter(
@@ -321,7 +347,27 @@ private fun CommentTabs(
 }
 
 /**
- * 未登录时的点赞引导条：一句人话 + 直达登录。
+ * 空态占位：一句人话 + 居中留白。
+ *
+ * 顶部留 60dp 而不是死贴列表顶：空评论区最常见的场景是"进来就想发第一条"，
+ * 视线自然落到输入栏，中间的空白正好把它让出来。
+ */
+@Composable
+private fun EmptyCommentHint(text: String) {
+    Box(
+        Modifier.fillMaxWidth().padding(top = 60.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            style = MaterialTheme.typography.bodyMedium,
+        )
+    }
+}
+
+/**
+ * 未登录时的写操作引导条：一句人话 + 直达登录。
  *
  * 只占一行高度，条数多也不影响列表；点它去登录页，回来这条自己消失（登录态是 Flow）。
  */
@@ -345,7 +391,7 @@ private fun LoginBanner(onClick: () -> Unit) {
         )
         Spacer(Modifier.width(6.dp))
         Text(
-            "登录网易云后，点赞会同步到你的账号",
+            "登录网易云后，点赞和发评论都会同步到你的账号",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.weight(1f),
@@ -398,15 +444,31 @@ private fun TabPill(
  * 刻意**不用液态玻璃**：评论动辄几千条，每一行都跑一遍折射/描边着色器的话，
  * 一屏十几条就是十几条 GPU 管线，滚动必掉帧。这里用"纯色卡片 + 一根细描边"，
  * 视觉上与玻璃卡片同一族，代价却接近于零。
+ *
+ * 操作行放在底部一行：点赞（人人可点）、回复（已登录且走网易云通道才给）、
+ * 删除（只有自己发的才给 —— 网易云删他人评论一律 40102，给了也是坑）。
  */
 @Composable
-private fun CommentCard(comment: Comment, onLike: () -> Unit) {
+private fun CommentCard(
+    comment: Comment,
+    isMine: Boolean,
+    replyToId: String?,
+    canReply: Boolean,
+    onLike: () -> Unit,
+    onReply: () -> Unit,
+    onDelete: () -> Unit,
+) {
     val shape = RoundedCornerShape(18.dp)
+    val replying = replyToId == comment.id
     Column(
         Modifier
             .fillMaxWidth()
             .clip(shape)
-            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.82f))
+            .background(
+                // 正在回复的那条高亮一下，不然点了"回复"下面多一条提示，用户不知道回的是谁
+                if (replying) MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
+                else MaterialTheme.colorScheme.surface.copy(alpha = 0.82f),
+            )
             .border(0.8.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f), shape)
             .padding(horizontal = 12.dp, vertical = 12.dp),
     ) {
@@ -468,6 +530,10 @@ private fun CommentCard(comment: Comment, onLike: () -> Unit) {
                                 if (isNotEmpty()) append("  ·  ")
                                 append(comment.ipLocation)
                             }
+                            if (isMine) {
+                                if (isNotEmpty()) append("  ·  ")
+                                append("我")
+                            }
                         },
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
@@ -485,9 +551,54 @@ private fun CommentCard(comment: Comment, onLike: () -> Unit) {
                     }
                     LikeButton(comment = comment, onClick = onLike)
                 }
+
+                // 操作行：回复 / 删除。默认只显示「回复」，与网易云一致（少一次误触删除的机会）。
+                Spacer(Modifier.height(4.dp))
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.End,
+                ) {
+                    if (canReply) {
+                        ActionChip(
+                            label = if (replying) "取消回复" else "回复",
+                            tint = if (replying) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+                            onClick = onReply,
+                        )
+                    }
+                    if (isMine) {
+                        if (canReply) Spacer(Modifier.width(8.dp))
+                        ActionChip(
+                            label = "删除",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+                            onClick = onDelete,
+                        )
+                    }
+                }
             }
         }
     }
+}
+
+/**
+ * 操作行的小胶囊（回复 / 删除）。
+ *
+ * 不做成图标按钮：两个字说清动作，比一个「↩」箭头更不容易误触，
+ * 视觉上也和点赞那排小控件同一族。
+ */
+@Composable
+private fun ActionChip(label: String, tint: androidx.compose.ui.graphics.Color, onClick: () -> Unit) {
+    Text(
+        label,
+        style = MaterialTheme.typography.labelMedium,
+        color = tint,
+        modifier = Modifier
+            .clip(RoundedCornerShape(50))
+            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f))
+            .pressable(scaleDown = 0.9f, onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 5.dp),
+    )
 }
 
 @Composable
