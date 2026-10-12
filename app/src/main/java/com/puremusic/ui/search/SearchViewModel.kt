@@ -5,6 +5,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.puremusic.data.SettingsStore
 import com.puremusic.model.Song
 import com.puremusic.playback.PlayerManager
 import com.puremusic.source.SourceRegistry
@@ -12,6 +13,9 @@ import com.puremusic.source.match.SearchRelevance
 import com.puremusic.source.match.SongGroup
 import com.puremusic.source.match.SongMatcher
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -35,9 +39,14 @@ private val SOURCE_ORDER = listOf(
 class SearchViewModel @Inject constructor(
     private val sourceRegistry: SourceRegistry,
     private val playerManager: PlayerManager,
+    private val settingsStore: SettingsStore,
 ) : ViewModel() {
 
     val sources = sourceRegistry.all
+
+    /** 最近搜索（最新在前）。网易云的搜索热词接口已下线，这里只给历史。 */
+    val history: StateFlow<List<String>> = settingsStore.searchHistory
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     var keyword by mutableStateOf("")
     /** null = 聚合搜索全部已注册音源；否则为指定音源 id。 */
@@ -61,6 +70,10 @@ class SearchViewModel @Inject constructor(
     fun search() {
         val kw = keyword.trim()
         if (kw.isEmpty()) return
+        viewModelScope.launch {
+            // 搜索成功才记历史：失败（断网 / 全源报错）不该把词留在历史里
+            settingsStore.addSearchHistory(kw)
+        }
         viewModelScope.launch {
             loading = true
             error = null
@@ -111,4 +124,14 @@ class SearchViewModel @Inject constructor(
 
     /** 带上下文：搜索结果整队入列，播完自动续下一首。 */
     fun play(song: Song) = playerManager.play(song, playableRows())
+
+    /** 点历史词：填入输入框并立刻搜。 */
+    fun searchAgain(word: String) {
+        keyword = word
+        search()
+    }
+
+    fun clearHistory() {
+        viewModelScope.launch { settingsStore.clearSearchHistory() }
+    }
 }

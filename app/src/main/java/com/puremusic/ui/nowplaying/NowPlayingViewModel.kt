@@ -63,6 +63,14 @@ class NowPlayingViewModel @Inject constructor(
     val themeConfig: StateFlow<ThemeConfig> = settingsStore.themeConfig
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), ThemeConfig())
 
+    /** 歌词页是否显示翻译（默认开；数据本来就在 Lyrics.translation 里）。 */
+    val lyricTranslation: StateFlow<Boolean> = settingsStore.lyricTranslation
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+
+    fun setLyricTranslation(on: Boolean) {
+        viewModelScope.launch { settingsStore.setLyricTranslation(on) }
+    }
+
     var lyrics by mutableStateOf(Lyrics())
     var showLyrics by mutableStateOf(false)
 

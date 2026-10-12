@@ -14,6 +14,7 @@ import com.puremusic.playback.PlayerManager
 import com.puremusic.source.SourceRegistry
 import com.puremusic.source.netease.NeteaseDiscover
 import com.puremusic.source.netease.NeteaseMusicSource
+import com.puremusic.source.netease.neteaseSongToSong
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
@@ -181,7 +182,7 @@ class PlaylistViewModel @Inject constructor(
                     offset += page.size
                 }
             }
-            songs = all.map { it.toSong() }
+            songs = all.map { neteaseSongToSong(it) }
             _detail.value = PlaylistDetailState(
                 name = full.name,
                 coverUrl = full.coverUrl,
@@ -283,20 +284,4 @@ class PlaylistViewModel @Inject constructor(
         if (songs.isEmpty()) return
         playerManager.playQueue(songs, 0)
     }
-}
-
-/** 网易云歌曲 → 统一 [Song]（与 NeteaseMusicSource 里的同名映射保持一致）。 */
-internal fun com.puremusic.source.netease.NeteaseSong.toSong(): Song {
-    val artistList = artists ?: ar
-    val albumObj = album ?: al
-    val durMs = if (duration > 0L) duration else dt
-    return Song(
-        source = MusicSourceType.NETEASE,
-        id = id.toString(),
-        title = name,
-        artist = artistList?.joinToString(" / ") { it.name }.orEmpty().ifBlank { "未知歌手" },
-        album = albumObj?.name ?: "",
-        coverUrl = albumObj?.picUrl ?: "",
-        durationMs = durMs,
-    )
 }

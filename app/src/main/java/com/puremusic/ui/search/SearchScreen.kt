@@ -29,6 +29,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SearchOff
 import androidx.compose.material3.CircularProgressIndicator
@@ -39,8 +40,10 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -50,6 +53,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.puremusic.model.Song
 import com.puremusic.source.match.SongGroup
@@ -117,11 +121,23 @@ fun SearchScreen(
                 Text(vm.error.orEmpty(), color = MaterialTheme.colorScheme.error)
             }
 
-            vm.results.isEmpty() && vm.weakResults.isEmpty() -> Box(
-                Modifier.weight(1f).fillMaxWidth(),
-                contentAlignment = Alignment.Center,
-            ) {
-                EmptySearchHint()
+            vm.results.isEmpty() && vm.weakResults.isEmpty() -> {
+                val history by vm.history.collectAsStateWithLifecycle()
+                if (history.isEmpty()) {
+                    Box(
+                        Modifier.weight(1f).fillMaxWidth(),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        EmptySearchHint()
+                    }
+                } else {
+                    SearchHistoryPane(
+                        history = history,
+                        onPick = vm::searchAgain,
+                        onClear = vm::clearHistory,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
             }
 
             else -> ResultList(
@@ -238,5 +254,64 @@ private fun EmptySearchHint() {
         )
         Spacer(Modifier.height(12.dp))
         Text("输入关键词开始搜索", style = MaterialTheme.typography.titleMedium)
+    }
+}
+
+/**
+ * 搜索历史（空结果时占位）。
+ *
+ * **没有热词榜**：网易云的 `/api/search/hot`、`/api/search/hot/detail`、`/api/search/default`
+ * 在裸 GET 下全部 404 / 400（2026-10-12 实测），接口已下线，所以只给本地历史。
+ * 别为了「看起来像商业播放器」去硬编码一份热词表 —— 那等于骗用户。
+ */
+@Composable
+private fun SearchHistoryPane(
+    history: List<String>,
+    onPick: (String) -> Unit,
+    onClear: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier.fillMaxWidth().padding(horizontal = UiTokens.SpaceL)) {
+        Row(
+            Modifier.fillMaxWidth().padding(top = 18.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "搜索历史",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(onClick = onClear) { Text("清空") }
+        }
+        LazyColumn(
+            Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            items(history, key = { "h-$it" }) { word ->
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .clickable { onPick(word) }
+                        .padding(vertical = 11.dp, horizontal = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        Icons.Filled.History,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f),
+                        modifier = Modifier.size(17.dp),
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Text(
+                        word,
+                        style = MaterialTheme.typography.bodyLarge,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
     }
 }

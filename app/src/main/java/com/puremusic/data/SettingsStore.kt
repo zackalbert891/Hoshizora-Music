@@ -42,6 +42,40 @@ class SettingsStore @Inject constructor(
         val BLUR_STRENGTH = floatPreferencesKey("blur_strength")
         /** 播放页单独的背景图（不跟随音乐库/设置页那张）。 */
         val PLAYER_BACKGROUND = stringPreferencesKey("player_background")
+        /** 歌词页是否显示翻译行（数据本来就在，只是没渲染）。 */
+        val LYRIC_TRANSLATION = booleanPreferencesKey("lyric_translation")
+        /** 搜索历史（JSON 数组，倒序，最多 [SEARCH_HISTORY_MAX] 条）。 */
+        val SEARCH_HISTORY = stringPreferencesKey("search_history")
+    }
+
+    /** 最近搜索关键词（最新在前）。空搜索词不会入历史。 */
+    val searchHistory: Flow<List<String>> = context.settingsDataStore.data.map { p ->
+        val json = p[Keys.SEARCH_HISTORY].orEmpty()
+        runCatching {
+            val type = object : com.google.gson.reflect.TypeToken<List<String>>() {}.type
+            gson.fromJson<List<String>>(json, type) ?: emptyList()
+        }.getOrDefault(emptyList()).filter { it.isNotBlank() }
+    }
+
+    suspend fun addSearchHistory(keyword: String) {
+        val kw = keyword.trim()
+        if (kw.isEmpty()) return
+        context.settingsDataStore.edit { p ->
+            val current = p[Keys.SEARCH_HISTORY].orEmpty()
+            val type = object : com.google.gson.reflect.TypeToken<List<String>>() {}.type
+            val list = runCatching {
+                gson.fromJson<List<String>>(current, type) ?: emptyList()
+            }.getOrDefault(emptyList())
+            // 去重（同一个词不重复入列）+ 新词置顶 + 限长
+            val next = (list.filterNot { it.equals(kw, ignoreCase = true) } + kw)
+                .takeLast(SEARCH_HISTORY_MAX)
+                .reversed()
+            p[Keys.SEARCH_HISTORY] = gson.toJson(next)
+        }
+    }
+
+    suspend fun clearSearchHistory() {
+        context.settingsDataStore.edit { p -> p.remove(Keys.SEARCH_HISTORY) }
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -61,6 +95,14 @@ class SettingsStore @Inject constructor(
     /** 播放页自定义背景图路径；null = 用封面做背景。 */
     val playerBackgroundPath: Flow<String?> = context.settingsDataStore.data
         .map { it[Keys.PLAYER_BACKGROUND] }
+
+    /** 歌词页显示翻译（默认开 —— 翻译数据本来就在 Lyrics 里，不显示反而像缺功能）。 */
+    val lyricTranslation: Flow<Boolean> = context.settingsDataStore.data
+        .map { it[Keys.LYRIC_TRANSLATION] ?: true }
+
+    suspend fun setLyricTranslation(on: Boolean) {
+        context.settingsDataStore.edit { p -> p[Keys.LYRIC_TRANSLATION] = on }
+    }
 
     val serverUrl: Flow<String> = context.settingsDataStore.data
         .map { it[Keys.SERVER_URL] ?: DEFAULT_SERVER_URL }
@@ -119,7 +161,12 @@ class SettingsStore @Inject constructor(
 
     companion object {
         const val DEFAULT_SERVER_URL = "http://127.0.0.1:3000"
+
+        /** 搜索历史最多保留多少条。 */
+        const val SEARCH_HISTORY_MAX = 12
     }
+
+    private val gson = com.google.gson.Gson()
 }
 
 /** 解析枚举，失败（含旧版本数据）回退默认值。 */

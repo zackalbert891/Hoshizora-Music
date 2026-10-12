@@ -165,20 +165,12 @@ class NeteaseMusicSource @Inject constructor(
         accountStore.remove(type)
     }
 
-    private fun NeteaseSong.toSong(): Song {
-        val artistList = artists ?: ar
-        val albumObj = album ?: al
-        val durMs = if (duration > 0L) duration else dt
-        return Song(
-            source = MusicSourceType.NETEASE,
-            id = id.toString(),
-            title = name,
-            artist = artistList?.joinToString(" / ") { it.name }.orEmpty().ifBlank { "未知歌手" },
-            album = albumObj?.name ?: "",
-            coverUrl = albumObj?.picUrl ?: "",
-            durationMs = durMs,
-        )
-    }
+    /**
+     * 把平台歌曲映射成统一模型（见文件末尾的顶层 [neteaseSongToSong]）。
+     *
+     * 这里保留成私有转发，是为了 [MusicSource] 各方法都还在用原来的调用点。
+     */
+    private fun NeteaseSong.toSong(): Song = neteaseSongToSong(this)
 
     /** 过滤翻唱 / DJ / 伴奏等非主流版本，保证搜索质量为原版。 */
     private fun List<NeteaseSong>.filterMainstream(): List<NeteaseSong> {
@@ -212,4 +204,40 @@ class NeteaseMusicSource @Inject constructor(
             "beat", "trap", "r&b版", "翻自",
         )
     }
+}
+
+/** extra 键：歌手 id —— 歌手页（`/api/v1/artist/<id>`）的入口。 */
+const val EXTRA_ARTIST_ID = "arId"
+/** extra 键：专辑 id —— 专辑页（`/api/v1/album/<id>`）的入口。 */
+const val EXTRA_ALBUM_ID = "alId"
+
+/**
+ * 平台歌曲 → 统一模型。
+ *
+ * `extra` 里带 **artistId / albumId**：歌手页与专辑页的入口就靠这两个 id 跳过去。
+ * extra 会随 `SongSnapshot` 一起入库，所以播放历史 / 收藏里的老歌曲也能点进歌手页。
+ *
+ * 做成顶层函数而不是 [NeteaseMusicSource] 的私有方法：歌手页 / 专辑页直接拿
+ * [NeteaseSong] 渲染列表，也需要同一套映射，否则两处映射迟早会漂。
+ */
+fun neteaseSongToSong(song: NeteaseSong): Song {
+    val artistList = song.artists ?: song.ar
+    val albumObj = song.album ?: song.al
+    val durMs = if (song.duration > 0L) song.duration else song.dt
+    val extraMap = buildMap {
+        (artistList?.firstOrNull()?.id ?: 0L).takeIf { it > 0L }
+            ?.let { put(EXTRA_ARTIST_ID, it.toString()) }
+        (albumObj?.id ?: 0L).takeIf { it > 0L }
+            ?.let { put(EXTRA_ALBUM_ID, it.toString()) }
+    }
+    return Song(
+        source = MusicSourceType.NETEASE,
+        id = song.id.toString(),
+        title = song.name,
+        artist = artistList?.joinToString(" / ") { it.name }.orEmpty().ifBlank { "未知歌手" },
+        album = albumObj?.name ?: "",
+        coverUrl = albumObj?.picUrl ?: "",
+        durationMs = durMs,
+        extra = extraMap,
+    )
 }

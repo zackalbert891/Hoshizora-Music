@@ -40,10 +40,18 @@ class DiagActivity : ComponentActivity() {
     @Inject lateinit var neteaseComment: com.puremusic.source.netease.NeteaseComment
     @Inject lateinit var neteaseSource: com.puremusic.source.netease.NeteaseMusicSource
     @Inject lateinit var neteaseDiscover: com.puremusic.source.netease.NeteaseDiscover
+@Inject lateinit var neteaseEntity: com.puremusic.source.netease.NeteaseEntity
     @Inject @Named("plain") lateinit var http: okhttp3.OkHttpClient
 
     private val TAG = "PureMusicDiag"
     private val out = StringBuilder()
+
+    /** 屏幕上的 TextView：探针跑在中途也能刷新，不必等全部跑完。 */
+    private var diagTv: TextView? = null
+
+    private fun tvUpdate() {
+        runOnUiThread { diagTv?.text = out.toString() }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -52,6 +60,7 @@ class DiagActivity : ComponentActivity() {
             setPadding(24, 24, 24, 24)
         }
         setContentView(ScrollView(this).apply { addView(tv) })
+        diagTv = tv
 
         lifecycleScope.launch {
             // 只测评论：adb shell am start -n com.puremusic/.DiagActivity -e only comments
@@ -79,6 +88,10 @@ class DiagActivity : ComponentActivity() {
                 )
                 "neteaseassets" -> runNeteaseAssets()
                 "loginprobe" -> runLoginProbe()
+                // 歌手 / 专辑 / 听歌排行 三个新页面层的数据探针：
+                // adb shell am start -n com.puremusic/.DiagActivity -e only entity -e a 6452 -e al 34720827
+                "entity" -> runEntityProbe()
+                "playrecord" -> runPlayRecordProbe()
                 else -> runDiag()
             }
             tv.text = out.toString()
@@ -88,6 +101,67 @@ class DiagActivity : ComponentActivity() {
     private fun line(s: String) {
         out.appendLine(s)
         Log.d(TAG, s)
+    }
+
+    /**
+     * 歌手页 / 专辑页数据探针。
+     *
+     * 这两个页面的接口都是裸 GET（`/api/v1/artist/<id>`、`/api/artist/albums/<id>`、
+     * `/api/v1/album/<id>`），curl 已验证 200，但**必须真机再验一遍**
+     * （电脑出口 IP 与手机不同，网易云对不同出口的风控策略不一样）。
+     *
+     * 用法：`adb shell am start -n com.puremusic/.DiagActivity -e only entity -e a 6452 -e al 34720827`
+     */
+    private suspend fun runEntityProbe() = withContext(Dispatchers.IO) {
+        accounts.awaitLoaded()
+        val cookie = accounts.accounts.value[com.puremusic.model.MusicSourceType.NETEASE]?.cookie
+        val artistId = intent.getStringExtra("a").orEmpty().ifBlank { "6452" }
+        val albumId = intent.getStringExtra("al").orEmpty().ifBlank { "34720827" }
+
+        line("=== 歌手 $artistId ===")
+        val artist = neteaseEntity.artist(artistId)
+        line("歌手: ${artist?.name}  别名=${artist?.alias}")
+        line("  专辑数=${artist?.albumCount} 作品数=${artist?.songCount} 简介长度=${artist?.briefDesc?.length}")
+        line("  头像=${artist?.avatarUrl?.take(70)}")
+
+        line("=== 歌手专辑 $artistId ===")
+        val page = neteaseEntity.artistAlbums(artistId, limit = 5, cookie = cookie)
+        line("专辑数=${page.albums.size} more=${page.more}")
+        page.albums.take(5).forEach { al ->
+            line("  [${al.id}] ${al.name}  ${al.size}首  ${al.publishTime}")
+        }
+
+        line("=== 专辑 $albumId ===")
+        val album = neteaseEntity.album(albumId, cookie)
+        line("专辑: ${album?.name}  歌手=${album?.artistName}(${album?.artistId})")
+        line("  曲目数=${album?.songs?.size}  发行=${album?.publishTime}  简介长度=${album?.description?.length}")
+        album?.songs?.take(5)?.forEach { s ->
+            line("  ${s.id} ${s.name} - ${(s.ar ?: s.artists).orEmpty().joinToString("/") { it.name }}")
+        }
+        tvUpdate()
+    }
+
+    /** 听歌排行探针（需要登录 Cookie + uid）。 */
+    private suspend fun runPlayRecordProbe() = withContext(Dispatchers.IO) {
+        accounts.awaitLoaded()
+        val acc = accounts.accounts.value[com.puremusic.model.MusicSourceType.NETEASE]
+        val cookie = acc?.cookie.orEmpty()
+        val uid = acc?.userId?.takeIf { it.isNotBlank() }
+            ?: Regex("(?:^|;)\\s*uid=([^;]*)").find(cookie)?.groupValues?.get(1).orEmpty()
+        line("uid=$uid cookie=${if (cookie.isBlank()) "空" else "有(${cookie.length})"}")
+        if (uid.isBlank() || uid == "0") {
+            line("读不到 uid，退出")
+            tvUpdate()
+            return@withContext
+        }
+        listOf(false to "所有时间", true to "本周").forEach { (weekly, label) ->
+            val list = neteaseEntity.playRecord(uid, weekly, cookie = cookie)
+            line("$label: ${list.size} 条")
+            list.take(5).forEach { r ->
+                line("  ${r.playCount}次  ${r.song.title} - ${r.song.artist}")
+            }
+        }
+        tvUpdate()
     }
 
     /**

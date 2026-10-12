@@ -83,6 +83,8 @@ fun PlaylistDetailScreen(
     onBack: () -> Unit,
     onOpenNowPlaying: () -> Unit = {},
     onLogin: () -> Unit = {},
+    onOpenArtist: (String) -> Unit = {},
+    onOpenAlbum: (String) -> Unit = {},
 ) {
     val vm: PlaylistViewModel = hiltViewModel()
     val favoriteIds by vm.favoriteIds.collectAsStateWithLifecycle()
@@ -203,6 +205,15 @@ fun PlaylistDetailScreen(
                     },
                     modifier = Modifier.animateItem(),
                     index = index,
+                    // 只有网易云歌曲的 extra 里才有 arId / alId，换源来的其他平台不给入口。
+                    // ⚠️ 这里必须**直接调用** onOpenArtist(...)：写成 `?.let { aid -> { onOpenArtist(x) } }`
+                    // 的话内层花括号是函数对象（不是调用），点击会静默无效 —— 表现为「点了没反应」。
+                    onArtistClick = song.extra[com.puremusic.source.netease.EXTRA_ARTIST_ID]
+                        ?.toLongOrNull()?.takeIf { it > 0L }
+                        ?.let { aid -> { onOpenArtist(aid.toString()) } },
+                    onAlbumClick = song.extra[com.puremusic.source.netease.EXTRA_ALBUM_ID]
+                        ?.toLongOrNull()?.takeIf { it > 0L }
+                        ?.let { alId -> { onOpenAlbum(alId.toString()) } },
                     trailing = {
                         Row {
                             if (vm.removable) {

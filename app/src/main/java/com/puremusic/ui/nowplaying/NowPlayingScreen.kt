@@ -127,6 +127,8 @@ fun NowPlayingScreen(
     onBack: () -> Unit,
     onCoverColor: (Long) -> Unit = {},
     onComments: (Song) -> Unit = {},
+    onArtist: (Song) -> Unit = {},
+    onAlbum: (Song) -> Unit = {},
 ) {
     val vm: NowPlayingViewModel = hiltViewModel()
     val song by vm.currentSong.collectAsStateWithLifecycle()
@@ -138,6 +140,8 @@ fun NowPlayingScreen(
     val themeConfig by vm.themeConfig.collectAsStateWithLifecycle()
     /** 背景模糊跟随设置里的强度（0 = 完全清晰，1 ≈ 40dp 半径）。 */
     val blurRadius = (themeConfig.blurStrength.coerceIn(0f, 1f) * 40f).dp
+    /** 歌词翻译显示开关。 */
+    val showTranslation by vm.lyricTranslation.collectAsStateWithLifecycle()
 
     val pagerState = rememberPagerState(initialPage = if (vm.showLyrics) 1 else 0) { 2 }
     val pagerScope = rememberCoroutineScope()
@@ -223,6 +227,8 @@ fun NowPlayingScreen(
             NeteaseTopBar(
                 song = song,
                 onBack = onBack,
+                onArtist = onArtist,
+                onAlbum = onAlbum,
                 onShare = { s ->
                     val intent = Intent(Intent.ACTION_SEND).apply {
                         type = "text/plain"
@@ -248,6 +254,8 @@ fun NowPlayingScreen(
                         vm = vm,
                         lines = vm.lyrics.lines,
                         coverColor = coverColor,
+                        showTranslation = showTranslation,
+                        translation = vm.lyrics.translation,
                         onTapCover = { pagerScope.launch { pagerState.animateScrollToPage(0) } },
                     )
                 } else {
@@ -335,12 +343,14 @@ fun NowPlayingScreen(
     }
 }
 
-/** 顶栏：返回 + 居中歌名/歌手（切歌横向滑动过渡）+ 分享。 */
+/** 顶栏：返回 + 居中歌名/歌手（切歌横向滑动过渡）+ 分享。歌手名与专辑名可点进对应页面。 */
 @Composable
 private fun NeteaseTopBar(
     song: Song?,
     onBack: () -> Unit,
     onShare: (Song) -> Unit,
+    onArtist: (Song) -> Unit = {},
+    onAlbum: (Song) -> Unit = {},
 ) {
     Row(
         Modifier.fillMaxWidth().height(56.dp),
@@ -360,6 +370,11 @@ private fun NeteaseTopBar(
         ) {
             val s = song
             if (s != null) {
+                val canArtist = s.extra[com.puremusic.source.netease.EXTRA_ARTIST_ID]
+                    ?.toLongOrNull()?.let { it > 0L } == true
+                val canAlbum = s.extra[com.puremusic.source.netease.EXTRA_ALBUM_ID]
+                    ?.toLongOrNull()?.let { it > 0L } == true &&
+                    s.album.isNotBlank() && s.album != s.artist
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     modifier = Modifier.widthIn(max = 200.dp),
@@ -374,11 +389,22 @@ private fun NeteaseTopBar(
                     )
                     Text(
                         s.artist,
-                        color = Color.White.copy(alpha = 0.65f),
+                        color = Color.White.copy(alpha = if (canArtist) 0.92f else 0.65f),
                         fontSize = 12.sp,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
+                        modifier = if (canArtist) Modifier.clickable { onArtist(s) } else Modifier,
                     )
+                    if (canAlbum) {
+                        Text(
+                            s.album,
+                            color = Color.White.copy(alpha = 0.6f),
+                            fontSize = 11.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.clickable { onAlbum(s) },
+                        )
+                    }
                 }
             } else {
                 Spacer(Modifier.width(0.dp))
@@ -411,6 +437,7 @@ private fun DiscPage(
     val speed by vm.speed.collectAsStateWithLifecycle()
     val sleepEnd by vm.sleepTimerEndMs.collectAsStateWithLifecycle()
     val playlists by vm.localPlaylists.collectAsStateWithLifecycle()
+    val showTranslation by vm.lyricTranslation.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
     var moreMenu by remember { mutableStateOf(false) }
@@ -502,6 +529,17 @@ private fun DiscPage(
                             if (sleepEnd > 0L) vm.cancelSleepTimer() else vm.setSleepTimer(30)
                             moreMenu = false
                         },
+                    )
+                    // 多档睡眠定时：固定 30 分钟不够用（午睡 45、整夜 90 都得有）。
+                    listOf(15, 30, 45, 60, 90, 120).forEach { minutes ->
+                        DropdownMenuItem(
+                            text = { Text("定时 $minutes 分钟") },
+                            onClick = { vm.setSleepTimer(minutes); moreMenu = false },
+                        )
+                    }
+                    DropdownMenuItem(
+                        text = { Text(if (showTranslation) "隐藏歌词翻译" else "显示歌词翻译") },
+                        onClick = { vm.setLyricTranslation(!showTranslation); moreMenu = false },
                     )
                     DropdownMenuItem(
                         text = { Text("添加到歌单") },
@@ -709,6 +747,8 @@ private fun LyricsPanel(
     vm: NowPlayingViewModel,
     lines: List<com.puremusic.model.LyricLine>,
     coverColor: Color,
+    showTranslation: Boolean,
+    translation: List<com.puremusic.model.LyricLine>,
     onTapCover: () -> Unit,
 ) {
     BoxWithConstraints(
@@ -729,6 +769,14 @@ private fun LyricsPanel(
                 Text("暂无歌词", color = Color.White.copy(alpha = 0.55f), fontSize = baseSp.sp)
             }
             return@BoxWithConstraints
+        }
+
+        // 翻译索引只随歌词变化重建一次（本面板每秒随 position 重组，不能每帧建 Map）。
+        // value 存**文本**（不是 LyricLine），渲染时直接取。
+        val translationByTime = remember(translation) {
+            translation
+                .filter { it.text.isNotBlank() }
+                .associate { it.timeMs to it.text }
         }
 
         val listState = rememberLazyListState()
@@ -790,6 +838,23 @@ private fun LyricsPanel(
                         .padding(vertical = lineGap),
                     textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                 )
+                // 翻译行：数据本来就在（歌词接口 tv=-1 一起返回，缓存分 L/T 两段存），
+                // 只是以前没渲染。精确按时间戳对齐，匹配不上就不显示 —— 用「就近时间」
+                // 会在副歌密集段落把翻译错配到相邻行，读起来比不显示更糟。
+                val trText: String? = if (showTranslation) translationByTime[line.timeMs] else null
+                if (trText != null) {
+                    val trSp: Float = sizeSp - 3f
+                    Text(
+                        text = trText,
+                        color = animatedColor,
+                        fontSize = trSp.sp,
+                        lineHeight = (trSp * 1.35f).sp,
+                        modifier = Modifier
+                            .fillMaxWidth(0.92f)
+                            .padding(bottom = lineGap),
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    )
+                }
             }
         }
     }

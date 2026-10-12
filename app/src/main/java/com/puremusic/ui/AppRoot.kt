@@ -52,10 +52,16 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.puremusic.source.autoswitch.AutoSwitchSource
+import com.puremusic.model.Song
+import com.puremusic.source.netease.EXTRA_ALBUM_ID
+import com.puremusic.source.netease.EXTRA_ARTIST_ID
 import com.puremusic.ui.comments.CommentsScreen
 import com.puremusic.ui.components.AppBackground
 import com.puremusic.ui.components.MiniPlayer
 import com.puremusic.ui.discover.DiscoverScreen
+import com.puremusic.ui.entity.AlbumScreen
+import com.puremusic.ui.entity.ArtistScreen
+import com.puremusic.ui.entity.PlayRecordScreen
 import com.puremusic.ui.theme.GlassLevel
 import com.puremusic.ui.theme.LocalGlassBackdrops
 import com.puremusic.ui.theme.LocalLiquidGlass
@@ -89,6 +95,16 @@ object Destinations {
     const val SOURCE = "source/{sourceId}"
     /** 发现页：推荐 / 榜单 / 歌单广场（对标 NCMusic 的「发现」）。 */
     const val DISCOVER = "discover"
+    /** 歌手页（网易云 `/api/v1/artist/<id>`）。 */
+    const val ARTIST = "artist/{artistId}"
+    /** 专辑页（网易云 `/api/v1/album/<id>`）。 */
+    const val ALBUM = "album/{albumId}"
+    /** 听歌排行（网易云 `/api/v1/play/record`，需登录）。 */
+    const val PLAY_RECORD = "playrecord"
+
+    fun artist(artistId: String) = "artist/$artistId"
+
+    fun album(albumId: String) = "album/$albumId"
 
     fun comments(songId: String, sourceId: String, title: String, artist: String) =
         "comments/${Uri.encode(songId)}/$sourceId/${Uri.encode(title)}/${Uri.encode(artist)}"
@@ -100,6 +116,15 @@ object Destinations {
     fun playlist(sourceId: String, playlistId: String, name: String) =
         "playlist/$sourceId/$playlistId/${Uri.encode(name)}"
 }
+
+/**
+ * 取歌曲 extra 里的实体 id（歌手 / 专辑）。
+ *
+ * 返回 null 表示这首歌没有该 id（比如换源来的其他平台歌曲、或换源失败退化的旧快照），
+ * 调用方据此**不显示入口**，而不是跳到一个空页面。
+ */
+private fun Song.entityId(key: String): String? =
+    extra[key]?.toLongOrNull()?.takeIf { it > 0L }?.toString()
 
 @Composable
 fun AppRoot() {
@@ -226,6 +251,7 @@ fun AppRoot() {
                         },
                         onOpenSource = { sourceId -> navController.navigate(Destinations.source(sourceId)) },
                         onSearch = { navController.navigate(Destinations.search()) },
+                        onOpenPlayRecord = { navController.navigate(Destinations.PLAY_RECORD) },
                         onOpenNowPlaying = { navController.navigate(Destinations.NOW_PLAYING) },
                     )
                 }
@@ -270,6 +296,16 @@ fun AppRoot() {
                     NowPlayingScreen(
                         onBack = { navController.popBackStack() },
                         onCoverColor = { vm.updateCoverSeed(it) },
+                        onArtist = { song ->
+                            song.entityId(EXTRA_ARTIST_ID)?.let {
+                                navController.navigate(Destinations.artist(it))
+                            }
+                        },
+                        onAlbum = { song ->
+                            song.entityId(EXTRA_ALBUM_ID)?.let {
+                                navController.navigate(Destinations.album(it))
+                            }
+                        },
                         onComments = { song ->
                             // 用「用户点进来时的原始平台」决定评论区归属：跨源换源只改 song.source，
                             // 原平台留在 extra 里。否则 QQ 的歌一换源出流，评论就会串到网易云去。
@@ -331,9 +367,47 @@ fun AppRoot() {
                         onBack = { navController.popBackStack() },
                         onOpenNowPlaying = { navController.navigate(Destinations.NOW_PLAYING) },
                         onLogin = { navController.navigate(Destinations.NETEASE_LOGIN) },
+                        onOpenArtist = { aid -> navController.navigate(Destinations.artist(aid)) },
+                        onOpenAlbum = { alId -> navController.navigate(Destinations.album(alId)) },
                     )
                 }
-                composable(Destinations.DISCOVER) {
+                composable(Destinations.PLAY_RECORD) {
+                    PlayRecordScreen(
+                        onBack = { navController.popBackStack() },
+                        onLogin = { navController.navigate(Destinations.NETEASE_LOGIN) },
+                        onOpenNowPlaying = { navController.navigate(Destinations.NOW_PLAYING) },
+                    )
+                }
+                composable(
+                    Destinations.ARTIST,
+                    arguments = listOf(navArgument("artistId") { type = NavType.StringType }),
+                ) { entry ->
+                    val artistId = entry.arguments?.getString("artistId").orEmpty()
+                    ArtistScreen(
+                        artistId = artistId,
+                        onBack = { navController.popBackStack() },
+                        onOpenAlbum = { albumId, _ ->
+                            navController.navigate(Destinations.album(albumId))
+                        },
+                    )
+                }
+                composable(
+                    Destinations.ALBUM,
+                    arguments = listOf(navArgument("albumId") { type = NavType.StringType }),
+                ) { entry ->
+                    val albumId = entry.arguments?.getString("albumId").orEmpty()
+                    AlbumScreen(
+                        albumId = albumId,
+                        onBack = { navController.popBackStack() },
+                        onOpenArtist = { aid, _ ->
+                            navController.navigate(Destinations.artist(aid))
+                        },
+                        onOpenNowPlaying = { navController.navigate(Destinations.NOW_PLAYING) },
+                    )
+                }
+                composable(
+                    Destinations.DISCOVER,
+                ) {
                     DiscoverScreen(
                         onBack = { navController.popBackStack() },
                         onOpenPlaylist = { sId, id, pname ->
