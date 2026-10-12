@@ -4,7 +4,51 @@
 > [GitHub Releases](https://github.com/zackalbert891/Hoshizora-Music/releases) 下载。
 > 本目录只保留各版本的校验文件（`.md5` / `.sha256`），用于校验下载完整性。
 
-## Hoshizora-v1.3.0-slim-20261011-2111.apk（当前最新，已装机）
+## Hoshizora-v1.4.0-entity-20261012-1427.apk（当前最新，已装机）
+
+补齐歌手页 / 专辑页 / 歌词翻译 / 搜索历史 / 睡眠定时多档，播放页顶栏专辑名修复可见。
+
+| 项 | 值 |
+|---|---|
+| versionName / versionCode | 1.0.0 / 2（`build.gradle.kts` 真实值；文件名里的 v1.4.0 是归档代号） |
+| 构建时间 | 2026-10-12 14:27 |
+| 大小 | 16594828 B（15.8 MB） |
+| MD5 | `ffff29d419f4b982ae5d588f58696f5b` |
+| SHA-256 | `be39063a72d3d8b7b98678b0281373ac96f5b24cc0732c2c69cba46057f15bdd` |
+| 签名 | debug keystore（可覆盖安装，保留数据） |
+
+### 这一版新增
+
+- **歌手页**：头像 / 名称 / 专辑数 / 作品数 / 简介 / 3 列专辑网格 + 显式「加载更多专辑」。
+- **专辑页**：封面 / 专辑名 / 歌手名（点回歌手页）/ 曲目数 / 发行年 / 播放全部 / 简介 / 全量曲目。
+- **歌词翻译**：翻译数据本就在歌词接口里，之前没渲染；播放页显示双语，「更多」菜单可开关。
+- **听歌排行页**：未登录引导 / 本周 / 所有时间切换 / 播放全部 / 播放次数，音乐库渐变入口卡。
+- **搜索历史**：DataStore 持久化（最多 12 条，去重置顶），空结果时展示 + 可清空。
+- **睡眠定时**：扩到 15 / 30 / 45 / 60 / 90 / 120 分钟六档。
+
+### 这一版修复
+
+- **播放页顶栏专辑名看不见**（两个原因叠加）：
+  `NeteaseTopBar` 的 Row 写死 `height(56.dp)`，三行文字装不下被裁掉 → 改 `heightIn(min = 56.dp)`；
+  `canAlbum` 里还有 `s.album != s.artist` 的隐藏条件，专辑名与歌手名相同的歌被直接不渲染 → 删掉该条件。
+- **歌手名不可点**：`PlaylistViewModel.kt` 里另有一份**重复的** `NeteaseSong.toSong()` 没写入 `arId`/`alId`，
+  已删除，统一走顶层 `neteaseSongToSong()`。
+- **列表项副标题手势被抢**：Compose 同一条 hit path 上 `pointerInput` 先注册者先消费；
+  在带 `animateItem()` 的 LazyColumn 里兄弟 `clickable` 抢不到。最终方案 = 底层整行 `pressable`
+  + 上层透明 `Spacer` 点击块分层覆盖文字区，命中区不重叠。
+
+### 接口备忘
+
+本版新增的四个接口都是**裸 GET** 通道（`https://music.163.com/api/xxx` + 官方 PC Cookie）：
+
+| 能力 | 端点 |
+|---|---|
+| 歌手资料 | `/api/v1/artist?id=` |
+| 歌手专辑 | `/api/artist/albums?id=&limit=&offset=` |
+| 专辑详情 | `/api/v1/album?id=` |
+| 听歌排行 | `/api/v1/play/record?uid=&type=` |
+
+## Hoshizora-v1.3.0-slim-20261011-2111.apk
 
 精简设置页与登录方式，净删 510 行（141 增 / 651 删）。
 
