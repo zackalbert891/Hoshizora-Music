@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -31,9 +32,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Key
+import androidx.compose.material.icons.filled.MarkunreadMailbox
 import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.QrCode2
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Smartphone
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -59,6 +63,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -77,13 +82,17 @@ private val BrandRedDeep = Color(0xFFB92929)
 /**
  * 网易云登录页。
  *
- * 只留两条路：**扫码**（默认）与 **Cookie 导入**。
- * 曾经还有「一键登录」（WebView 官网）与「手机号」（短信 / 密码），真机实测都走不通 ——
- * 官网登录页在 WebView 里拿不到 `MUSIC_U`，短信 / 密码则被 -460/-462 动态风控拦死。
- * 摆着两个点不动的入口只会误导用户，所以宁可少给。
+ * 三条路：**扫码**（默认）、**手机号验证码**、**Cookie 导入**。
+ *
+ * 手机号曾经被当成"用不了"删过 —— 当时归因是被 -460/-462 动态风控拦死，
+ * 但 2026-10-12 真机正交对照证明真因是**登录请求里带了 `os` 字段**：
+ * 自称安卓客户端去做登录本身就是风控特征（读接口与评论写接口反而要伪装成安卓，
+ * 两条路规则相反）。去掉 `os` 伪装后发验证码实测 code=200。
+ *
+ * 「一键登录」（WebView 官网）仍没加回来：它拿不到 `MUSIC_U`，与风控无关。
  *
  * 扫码也可能撞上风控，此时不干等：把官方给的验证页（verifyUrl + verifyToken）拉起来，
- * 用户过一次验证后带着 token 自动重新取码。
+ * 用户过一次验证后带着 token 自动重试。
  */
 @Composable
 fun NeteaseLoginScreen(onBack: () -> Unit, onSuccess: () -> Unit) {
@@ -200,9 +209,10 @@ private fun BrandHeader() {
 
 // ------------------------------------------------------------------ 方式切换
 
-/** 各页签在分段控件里显示的短名（完整 label 太长，两个挤一行会截断）。 */
+/** 各页签在分段控件里显示的短名（完整 label 太长，三个挤一行会截断）。 */
 private fun shortLabel(tab: NeteaseLoginTab): String = when (tab) {
     NeteaseLoginTab.QR -> "扫码"
+    NeteaseLoginTab.PHONE -> "手机号"
     NeteaseLoginTab.COOKIE -> "Cookie"
 }
 
@@ -271,6 +281,7 @@ private fun LoginPaneCard(vm: NeteaseLoginViewModel) {
     ) {
         when (vm.tab) {
             NeteaseLoginTab.QR -> QrPane(vm)
+            NeteaseLoginTab.PHONE -> PhonePane(vm)
             NeteaseLoginTab.COOKIE -> CookiePane(vm)
         }
         StatusStrip(vm)
@@ -306,6 +317,90 @@ private fun QrPane(vm: NeteaseLoginViewModel) {
             color = BrandRed,
             strokeWidth = 3.dp,
         )
+    }
+}
+
+// ------------------------------------------------------------------ 手机号
+
+/**
+ * 手机号验证码登录。
+ *
+ * 验证码输入框与「获取验证码」并排成一行——拆成上下两个控件会让这一屏多出将近
+ * 一行高度，而登录卡片上方还有品牌区与页签，三者叠加后在窄屏上按钮会被顶到
+ * 折叠线以下。这里宁可让验证码框窄一点，也保证首屏可见。
+ */
+@Composable
+private fun PhonePane(vm: NeteaseLoginViewModel) {
+    PaneHeader(
+        icon = Icons.Filled.Smartphone,
+        title = "手机号验证码登录",
+        subtitle = "验证码由网易云官方发送，约 1 分钟内有效。",
+    )
+    Spacer(Modifier.height(16.dp))
+    LoginField(
+        value = vm.phoneInput,
+        onValueChange = vm::onPhoneChange,
+        label = "手机号",
+        icon = Icons.Filled.PhoneAndroid,
+        keyboardType = KeyboardType.Phone,
+    )
+    Spacer(Modifier.height(10.dp))
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        LoginField(
+            value = vm.captchaInput,
+            onValueChange = vm::onCaptchaChange,
+            label = "验证码",
+            icon = Icons.Filled.MarkunreadMailbox,
+            keyboardType = KeyboardType.NumberPassword,
+            modifier = Modifier.weight(1f),
+        )
+        SendCaptchaButton(vm)
+    }
+    Spacer(Modifier.height(18.dp))
+    BrandButton("登录", !vm.busy && vm.captchaInput.isNotBlank(), vm.busy, vm::submitCaptcha)
+}
+
+/** 「获取验证码」按钮：倒计时期间变成不可点的剩余秒数。 */
+@Composable
+private fun SendCaptchaButton(vm: NeteaseLoginViewModel) {
+    val counting = vm.captchaCountdown > 0
+    val enabled = !vm.busy && !counting && vm.phoneInput.length == 11
+    val label = when {
+        counting -> "${vm.captchaCountdown}s"
+        else -> "获取验证码"
+    }
+    Box(
+        Modifier
+            .height(56.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(
+                BrandRed.copy(alpha = if (enabled) 0.14f else 0.07f),
+            )
+            .pressable(scaleDown = 0.96f, enabled = enabled, onClick = vm::sendCaptcha)
+            .padding(horizontal = 14.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (vm.busy && !counting) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(14.dp),
+                    strokeWidth = 2.dp,
+                    color = BrandRed,
+                )
+                Spacer(Modifier.width(6.dp))
+            }
+            Text(
+                label,
+                fontSize = 13.sp,
+                maxLines = 1,
+                fontWeight = FontWeight.Medium,
+                color = if (enabled) BrandRed else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+            )
+        }
     }
 }
 
@@ -363,6 +458,8 @@ private fun LoginField(
     label: String,
     icon: ImageVector,
     minLines: Int = 1,
+    keyboardType: KeyboardType = KeyboardType.Text,
+    modifier: Modifier = Modifier.fillMaxWidth(),
 ) {
     OutlinedTextField(
         value = value,
@@ -372,6 +469,7 @@ private fun LoginField(
         singleLine = minLines == 1,
         minLines = minLines,
         visualTransformation = VisualTransformation.None,
+        keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
         shape = RoundedCornerShape(16.dp),
         textStyle = MaterialTheme.typography.bodyMedium,
         colors = OutlinedTextFieldDefaults.colors(
@@ -381,7 +479,7 @@ private fun LoginField(
             cursorColor = BrandRed,
             unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f),
         ),
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier,
     )
 }
 

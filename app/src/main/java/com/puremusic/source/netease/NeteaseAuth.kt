@@ -226,23 +226,20 @@ class NeteaseAuth @Inject constructor(
     suspend fun getUnikey(): String? = withContext(Dispatchers.IO) {
         ensureAnonymousToken()
         val cookie = baseCookie()
-        // 通道 1/2：interface / interface3 的 eapi（本机与多数网络实测正常）
-        val eapiForm = NeteaseCrypto.eapi(UNIKEY_PATH, mapOf("type" to 1))
-        for (host in EAPI_HOSTS) {
-            val text = post("$host/eapi/login/qrcode/unikey", eapiForm, cookie)
-            val key = runCatching {
-                gson.fromJson(text, UnikeyResponse::class.java)
-            }.getOrNull()?.takeIf { it.code == 200 }?.keyOrNull()
-            if (!key.isNullOrBlank()) return@withContext key
-        }
-        // 通道 3：weapi（可能被风控返回空 body）
-        val weapiText = post(
-            "https://music.163.com/weapi/login/qrcode/unikey",
-            NeteaseCrypto.weapi(mapOf("type" to 1)),
-            cookie,
-        )
-        runCatching { gson.fromJson(weapiText, UnikeyResponse::class.java) }
-            .getOrNull()?.takeIf { it.code == 200 }?.keyOrNull()
+        // 通道 1：weapi 裸域（2026-10-12 真机实测 200）
+        // 登录类端点不走 eapi —— /eapi/login/qrcode/unikey 在 interface/interface3
+        // 上实测均 404「接口未找到」，原因与手机号登录一致：eapi 只收 App 内部路径。
+        runCatching {
+            gson.fromJson(
+                post("https://music.163.com/weapi$UNIKEY_PATH", NeteaseCrypto.weapi(mapOf("type" to 1)), cookie),
+                UnikeyResponse::class.java,
+            )
+        }.getOrNull()?.takeIf { it.code == 200 }?.keyOrNull()?.let { return@withContext it }
+
+        // 通道 2：明文 GET（免签，实测同样 200；作为weapi 被风控时的兜底）
+        runCatching {
+            gson.fromJson(get("https://music.163.com$UNIKEY_PATH?type=1", cookie), UnikeyResponse::class.java)
+        }.getOrNull()?.takeIf { it.code == 200 }?.keyOrNull()
     }
 
     /** 轮询扫码结果；803 成功时从 Set-Cookie 取登录态。 */
@@ -252,31 +249,27 @@ class NeteaseAuth @Inject constructor(
             add(baseCookie())
             if (!verifyToken.isNullOrBlank()) add("verifyToken=$verifyToken")
         }.joinToString("; ")
-        val candidates = EAPI_HOSTS.map { host ->
-            Triple(host, POLL_PATH, NeteaseCrypto.eapi(POLL_PATH, mapOf("key" to unikey, "type" to 1)))
-        } + Triple(
-            "https://music.163.com",
-            POLL_PATH,
-            NeteaseCrypto.eapi(POLL_PATH, mapOf("key" to unikey, "type" to 1)),
-        )
-
-        // eapi 全被风控（-462）时的兜底：weapi 通道。
-        // -462 是 IP/设备维度的风控码，真机移动网络同样会命中；此时换 weapi 签名
-        // （不同的加密通道与 Referer 组合）有一定概率放行，值得一试。
-        val allCandidates = candidates + listOf(
-            Triple("__weapi__", POLL_PATH, NeteaseCrypto.weapi(mapOf("key" to unikey, "type" to 1))),
-        )
+        // 通道顺序（2026-10-12 真机实测调整）：weapi 裸域 → 明文 GET → eapi。
+        // 登录类端点在 interface/interface3 的 /eapi 上实测均 404「接口未找到」，
+        // eapi 只收 App 内部路径，所以把它降到最后当兜底；-462 时换通道仍值得一试。
+        val pollBody = mapOf("key" to unikey, "type" to 1)
+        // form 为 null 表示明文 GET（免签），否则走 weapi/eapi 的 POST
+        val candidates: List<Pair<String, Map<String, String>?>> = listOf(
+            "https://music.163.com/weapi$POLL_PATH" to NeteaseCrypto.weapi(pollBody),
+            "https://music.163.com$POLL_PATH?key=$unikey&type=1" to null,
+            "https://music.163.com/eapi$POLL_PATH" to NeteaseCrypto.eapi(POLL_PATH, pollBody),
+        ) + EAPI_HOSTS.map { host ->
+            "$host/eapi$POLL_PATH" to NeteaseCrypto.eapi(POLL_PATH, pollBody)
+        }
 
         var lastMsg = ""
         var lastRisk: NeteaseRiskControl? = null
-        for ((host, _, form) in allCandidates) {
-            val url = if (host == "__weapi__") {
-                "https://music.163.com/weapi/login/qrcode/client/login"
+        for ((url, form) in candidates) {
+            val resp = if (form == null) {
+                getRaw(url, cookie)
             } else {
-                "$host/eapi/login/qrcode/client/login"
-            }
-            val resp = runCatching { postRaw(url, form, cookie) }.getOrNull()
-                ?: continue
+                runCatching { postRaw(url, form, cookie) }.getOrNull()
+            } ?: continue
             val body = resp.body
             if (body.isBlank()) continue
             val parsed = runCatching { gson.fromJson(body, RiskResponse::class.java) }.getOrNull()
@@ -339,6 +332,158 @@ class NeteaseAuth @Inject constructor(
         NeteaseLoginResult(true, cookie = normalized, profile = profile)
     }
 
+    // ---------------------------------------------------------------- 手机号登录
+
+    /**
+     * 登录专用 Cookie：**刻意不带 os 字段**。
+     *
+     * 这与读接口（[baseCookie]，os=pc）和评论写接口（os=android）都不同，原因是真机实测
+     * 出的硬结论（2026-10-12，DiagActivity `only=loginprobe` 四格正交对照）：
+     *
+     *   os=android + 安卓 UA → -462 风控拦截
+     *   os=android + PC  UA → -462 风控拦截← 换 UA 无用，证明与 UA 无关
+     *   无 os     + 安卓 UA → 400业务拒绝（通道没被拦）
+     *   无 os+ PC  UA → 400 业务拒绝（通道没被拦）
+     *
+     * 即**决定成败的只有 cookie 里的 os 字段**：声称自己是安卓客户端去做登录，
+     * 本身就是风控特征。别看到别处写"安卓要伪装 os=android"就照搬——那条只对评论/收藏成立。
+     */
+    private fun loginCookie(verifyToken: String? = null): String = buildList {
+        anonymousMusicA.takeIf { it.isNotBlank() }?.let { add("MUSIC_A=$it") }
+        add("__remember_me=true")
+        verifyToken?.takeIf { it.isNotBlank() }?.let { add("verifyToken=$it") }
+    }.joinToString("; ")
+
+    /**
+     * 发送短信验证码。
+     *
+     * ⚠️ 参数名是 `cellphone` + `ctcode`，不是 `phone` + `countrycode`（后者是登录接口的写法）。
+     * 用错名字服务端返 400「参数错误」，很容易被误判成被风控 —— 已在真机踩过一次。
+     *
+     * 实测（2026-10-12）：带 os=android 也能发出去（code=200 data=true），
+     * 无 os 时返回 405「发送验证码间隔过短」，说明两条路都真的把短信发出去了。
+     */
+    suspend fun sendCaptcha(phone: String): NeteaseLoginResult = withContext(Dispatchers.IO) {
+        val text = postWeapiLogin(
+            SMS_CAPTCHA_PATH,
+            mapOf("cellphone" to phone.trim(), "ctcode" to "86"),
+        )
+        val code = codeOf(text)
+        when {
+            code == 200 && text.contains("\"true\"") ->
+                NeteaseLoginResult(true, message = "验证码已发送")
+            code == 405 -> NeteaseLoginResult(false, message = "发送过于频繁，请稍后再试")
+            code == -460 || code == -462 || code == 250 ->
+                NeteaseLoginResult(false, message = "被网易云风控拦截，请稍后再试")
+            code == 400 ->
+                NeteaseLoginResult(false, message = "手机号格式有误，请检查后重试")
+            text.isBlank() ->
+                NeteaseLoginResult(false, message = "网络异常，请稍后再试")
+            else -> NeteaseLoginResult(false, message = "发送失败（code=$code）")
+        }
+    }
+
+    /**
+     * 验证码登录。
+     *
+     * 参数照网易云客户端：`phone` + `captcha` + `countrycode` + `rememberLogin`。
+     * 成功时登录凭证在 Set-Cookie 的 MUSIC_U 里，因此必须走 [postRaw] 保留响应头。
+     */
+    suspend fun loginByCaptcha(
+        phone: String,
+        captcha: String,
+        verifyToken: String? = null,
+    ): NeteaseLoginResult = withContext(Dispatchers.IO) {
+        val resp = postRaw(
+            "https://music.163.com$LOGIN_CAPTCHA_PATH",
+            NeteaseCrypto.weapi(
+                mapOf(
+                    "phone" to phone.trim(),
+                    "captcha" to captcha.trim(),
+                    "countrycode" to "86",
+                    "rememberLogin" to "true",
+                    "csrf_token" to "",
+                )
+            ),
+            loginCookie(verifyToken),
+        ) ?: return@withContext NeteaseLoginResult(false, message = "网络异常，请稍后再试")
+
+        finishLogin(resp, phone)
+    }
+
+    /**
+     * 密码登录。与 [loginByCaptcha] 同端点，只是把 captcha 换成 password。
+     *
+     * 实测：真机上无论参数怎么填，带 os 都会被 -462 拦；不带 os 能到"账号或密码错误"这一步，
+     * 说明通道本身可用。因此这里不再做 os 伪装。
+     */
+    suspend fun loginByPassword(
+        phone: String,
+        password: String,
+        verifyToken: String? = null,
+    ): NeteaseLoginResult = withContext(Dispatchers.IO) {
+        val resp = postRaw(
+            "https://music.163.com$LOGIN_CAPTCHA_PATH",
+            NeteaseCrypto.weapi(
+                mapOf(
+                    "phone" to phone.trim(),
+                    "password" to password,
+                    "countrycode" to "86",
+                    "rememberLogin" to "true",
+                    "csrf_token" to "",
+                )
+            ),
+            loginCookie(verifyToken),
+        ) ?: return@withContext NeteaseLoginResult(false, message = "网络异常，请稍后再试")
+
+        finishLogin(resp, phone)
+    }
+
+    /** 登录响应的统一收尾：取 Cookie → 换资料 → 判风控。 */
+    private suspend fun finishLogin(resp: Resp, phone: String): NeteaseLoginResult {
+        val code = codeOf(resp.body)
+        if (code == 200) {
+            val merged = mergeCookies(loginCookie(), resp.setCookies)
+            if (merged.contains("MUSIC_U")) {
+                val normalized = enrichCookie(merged)
+                val profile = fetchProfile(normalized)
+                return NeteaseLoginResult(true, cookie = normalized, profile = profile)
+            }
+            return NeteaseLoginResult(
+                false,
+                message = "登录成功但未取到登录凭证（MUSIC_U），请改用「Cookie 导入」登录",
+            )
+        }
+        if (code == -460 || code == -462 || code == 250) {
+            val risk = runCatching { gson.fromJson(resp.body, RiskResponse::class.java) }.getOrNull()?.riskOrNull()
+            return NeteaseLoginResult(
+                false,
+                message = "被网易云安全校验拦截，请完成验证后重试",
+                risk = risk,
+            )
+        }
+        return NeteaseLoginResult(false, message = loginFailReason(code, resp.body))
+    }
+
+    private fun loginFailReason(code: Int, body: String): String {
+        val serverMsg = Regex("\"(?:msg|message)\"\\s*:\\s*\"([^\"]{0,40})").find(body)?.groupValues?.get(1)
+        return when (code) {
+            0 -> "网络异常或登录态异常，请稍后再试"
+            400 -> serverMsg?.takeIf { it.isNotBlank() } ?: "请求被拒（code=400）"
+            502, 505 -> serverMsg?.takeIf { it.isNotBlank() } ?: "账号或密码错误（code=$code）"
+            301 -> "请先登录网易云账号"
+            405 -> "操作过于频繁，请稍后再试"
+            else -> serverMsg?.takeIf { it.isNotBlank() } ?: "登录失败（code=$code）"
+        }
+    }
+
+    /** 登录类接口统一走 weapi 裸域：eapi 在 interface/interface3 上对这些路径一律 404。 */
+    private fun postWeapiLogin(path: String, body: Map<String, String>): String =
+        post("https://music.163.com$path", NeteaseCrypto.weapi(body), loginCookie())
+
+    private fun codeOf(text: String): Int =
+        Regex("\"code\"\\s*:\\s*(-?\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+
     /** 兼容直接粘贴整段请求头（含 "Cookie:" 前缀）或 name=value 列表。 */
     private fun normalizeCookieInput(raw: String): String {
         var s = raw.trim()
@@ -400,7 +545,10 @@ class NeteaseAuth @Inject constructor(
         }.getOrNull()
     }
 
-    private fun get(url: String, cookie: String): String {
+    private fun get(url: String, cookie: String): String = getRaw(url, cookie).body
+
+    /** GET 但保留 Set-Cookie —— 二维码轮询的 803 响应要靠它拿 MUSIC_U。 */
+    private fun getRaw(url: String, cookie: String): Resp {
         val request = Request.Builder()
             .url(url)
             .header("User-Agent", UA)
@@ -409,8 +557,10 @@ class NeteaseAuth @Inject constructor(
             .get()
             .build()
         return runCatching {
-            client.newCall(request).execute().use { if (it.isSuccessful) it.body?.string().orEmpty() else "" }
-        }.getOrDefault("")
+            client.newCall(request).execute().use {
+                Resp(it.code, if (it.isSuccessful) it.body?.string().orEmpty() else "", it.headers("Set-Cookie"))
+            }
+        }.getOrElse { Resp(0, "", emptyList()) }
     }
 
     /** 把响应 Set-Cookie 与既有 cookie 合并（同名覆盖）。 */
@@ -489,6 +639,8 @@ class NeteaseAuth @Inject constructor(
     private companion object {
         const val UNIKEY_PATH = "/api/login/qrcode/unikey"
         const val POLL_PATH = "/api/login/qrcode/client/login"
+        const val SMS_CAPTCHA_PATH = "/weapi/sms/captcha/sent"
+        const val LOGIN_CAPTCHA_PATH = "/weapi/login/cellphone"
         /** 匿名注册失败后的冷却时间：该接口常被风控，别在每个登录动作前反复打。 */
         const val ANON_COOLDOWN_MS = 10 * 60 * 1000L
         const val UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +

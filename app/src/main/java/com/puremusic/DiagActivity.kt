@@ -78,6 +78,7 @@ class DiagActivity : ComponentActivity() {
                     intent.getStringExtra("cid").orEmpty(),
                 )
                 "neteaseassets" -> runNeteaseAssets()
+                "loginprobe" -> runLoginProbe()
                 else -> runDiag()
             }
             tv.text = out.toString()
@@ -835,8 +836,183 @@ private suspend fun runDiag() = withContext(Dispatchers.IO) {
         }
     }
 
+    /**
+     * 登录风控对照探针（2026-10-12）。
+     *
+     * 要回答的问题：v1.3.0 把手机号登录当"用不了"删掉了，实测被 -460/-462 拦。
+     * 同类项目 NCMusic（开源）的写法与我们完全不同：
+     *   - 域名 裸 music.163.com（我们也是裸域）
+     *   - UA   桌面 Chrome（一样）
+     *   - csrf_token 传空串（我们传真值）
+     *   - Cookie 不额外伪装 os/appver/NMTID（我们的写接口强制 os=android）
+     * 到底是哪个差异决定成败？本探针在同一台设备、同一网络下逐项对照。
+     *
+     * 判定标准很明确：
+     *   -460/-462/250 = 动态风控拦截（写操作被拒）
+     *   -46x之外的非200 业务码（如 502/505）= 通道通了，只是参数不对 → **能救**
+     *   200 = 真成功
+     *
+     * 注意：故意用假手机号（170 段），既不打扰真人，也不会误发短信；
+     * 目的是看服务端在哪一层把我们拦下，而不是真的登录。
+     */
+    private suspend fun runLoginProbe() = withContext(Dispatchers.IO) {
+        line("════ 网易云登录风控对照探针 ════")
+        accounts.awaitLoaded()
+        val real = accounts.currentNeteaseCookie.orEmpty()
+        if (real.isBlank()) {
+            line("⚠️ 未登录 —— 无 csrf 可用，本次只测匿名通道")
+        }
+        val csrf = Regex("""(?:^|;\s*)__csrf=([^;]+)""").find(real)?.groupValues?.get(1).orEmpty()
+        val uid = Regex("""(?:^|;\s*)uid=([^;]+)""").find(real)?.groupValues?.get(1).orEmpty()
+        line("uid=$uid  csrf=${if (csrf.isBlank()) "(无)" else csrf.take(6) + "…"}")
+
+        // ---- Cookie 变体：A=我们的写法（os=android），B=NCMusic 写法（不伪装）----
+        val ckA = androidStyle(real)      // 加 os=android
+        val ckB = bareStyle(real)          // 剥掉 os/appver/NMTID，只留服务端下发字段
+
+        line("")
+        line("── A=本项目写法 (os=android)  vs  B=NCMusic 写法 (不伪装) ──")
+
+        val fakePhone = "17012345678"
+        // 参数名严格照NCMusic 的实现（第一轮我写错成 phone/countrycode，服务端返回
+        // 400「参数错误」，差点误判成被风控 —— 记录在此，别再犯）。
+        val pwdBody = mapOf(
+            "phone" to fakePhone,
+            "password" to "x^9zQw!kLm2",     // 假密码：只看是否被风控，不看是否登入
+            "countrycode" to "86",
+            "rememberLogin" to "true",
+            "csrf_token" to csrf.ifBlank { "" },
+        )
+
+        // ---- 正交对照：把「os 字段」与「UA」两个变量拆开，否则分不清是谁决定成败 ----
+        line("")
+        line("── ① 密码登录 weapi：os字段 × UA 四格正交 ──")
+        hitLogin("os=android + 安卓UA ", "https://music.163.com/weapi/login/cellphone",
+            "weapi", pwdBody, cookieWithOs(real, "android"), ua = ANDROID_UA)
+        hitLogin("os=android + PC  UA ", "https://music.163.com/weapi/login/cellphone",
+            "weapi", pwdBody, cookieWithOs(real, "android"), ua = UA)
+        hitLogin("无os     + 安卓UA ", "https://music.163.com/weapi/login/cellphone",
+            "weapi", pwdBody, bareStyle(real), ua = ANDROID_UA)
+        hitLogin("无os     + PC  UA ", "https://music.163.com/weapi/login/cellphone",
+            "weapi", pwdBody, bareStyle(real), ua = UA)
+
+        // ② eapi 通道（interface/interface3），项目里已验证可用的另一条路
+        line("")
+        line("── ② 密码登录 eapi 通道 ──")
+        for (host in listOf("https://interface.music.163.com", "https://interface3.music.163.com")) {
+            hitLogin("eapi $host", "$host/eapi/login/cellphone",
+                "eapi", pwdBody, bareStyle(real), ua = UA)
+        }
+
+        // ③ 验证码：参数名必须是 cellphone + ctcode（第一轮写成 phone/countrycode 被判参数错误）
+        line("")
+        line("── ③ 发短信验证码（cellphone+ctcode）──")
+        val smsBody = mapOf("cellphone" to fakePhone, "ctcode" to "86")
+        hitLogin("os=android + 安卓UA ", "https://music.163.com/weapi/sms/captcha/sent",
+            "weapi", smsBody, cookieWithOs(real, "android"), ua = ANDROID_UA)
+        hitLogin("无os     + PC  UA ", "https://music.163.com/weapi/sms/captcha/sent",
+            "weapi", smsBody, bareStyle(real), ua = UA)
+
+        // ⑤ 二维码 unikey：项目当前用 eapi 优先，NCMusic 走明文 /api。对照一下。
+        line("")
+        val qrBody = mapOf("type" to "1", "csrf_token" to csrf.ifBlank { "" })
+        hitLogin("qrUnikey/eapi", "https://interface3.music.163.com/eapi/login/qrcode/unikey",
+            "eapi", qrBody, ckA, ua = ANDROID_UA)
+        hitLogin("qrUnikey/weapi裸域", "https://music.163.com/weapi/login/qrcode/unikey",
+            "weapi", qrBody, ckB, ua = UA)
+        // 明文GET（NCMusic 注释里说的免签路径）
+        runCatching {
+            http.newCall(
+                okhttp3.Request.Builder()
+                    .url("https://music.163.com/api/login/qrcode/unikey?type=1")
+                    .header("User-Agent", UA)
+                    .header("Cookie", ckB)
+                    .header("Referer", "https://music.163.com/")
+                    .get().build()
+            ).execute().use { r -> line("  qrUnikey/明文GET   http=${r.code} ${r.body?.string()?.take(120) ?: "空"}") }
+        }.onFailure { line("  qrUnikey/明文GET   异常 ${it.message}") }
+
+        // ⑥ 拿真实 csrf 的方式也可能是差异点：项目用 enrichCookie 补 os/appver/NMTID，
+        // NCMusic 直接用浏览器粘来的原始 Cookie。查一下两种 cookie 实际差多少字段。
+        line("")
+        line("── Cookie 字段差异（决定服务端认不认这个客户端）──")
+        line("  A(${ckA.split(";").size}字段): ${ckA.split(";").map { it.trim().substringBefore("=") }.joinToString(",")}")
+        line("  B(${ckB.split(";").size}字段): ${ckB.split(";").map { it.trim().substringBefore("=") }.joinToString(",")}")
+
+        line("")
+        line("判读：-460/-462/250 = 风控拦死；其它非200 业务码 = 通道本身没被拦，只是参数/账号不对")
+    }
+
+    /** 打一个登录类接口并打印服务端原文。kind 决定用 weapi 还是 eapi 签名。 */
+    private suspend fun hitLogin(
+        tag: String,
+        url: String,
+        kind: String,
+        body: Map<String, String>,
+        cookie: String,
+        ua: String,
+    ) {
+        val form = if (kind == "eapi") {
+            com.puremusic.source.netease.NeteaseCrypto.eapi(url.substringAfter("163.com"), body)
+        } else {
+            com.puremusic.source.netease.NeteaseCrypto.weapi(body)
+        }
+        val encoded = form.entries.joinToString("&") { (k, v) ->
+            "${java.net.URLEncoder.encode(k, "UTF-8")}=${java.net.URLEncoder.encode(v, "UTF-8")}"
+        }
+        val txt = runCatching {
+            http.newCall(
+                okhttp3.Request.Builder()
+                    .url(url)
+                    .post(encoded.toRequestBody("application/x-www-form-urlencoded".toMediaType()))
+                    .header("Cookie", cookie)
+                    .header("User-Agent", ua)
+                    .header("Origin", "https://music.163.com")
+                    .header("Referer", "https://music.163.com/")
+                    .build()
+            ).execute().use { it.body?.string().orEmpty() }
+        }.getOrElse { "异常: ${it.message}" }
+        val code = Regex(""""code"\s*:\s*(-?\d+)""").find(txt)?.groupValues?.get(1) ?: "?"
+        val msg = Regex(""""(?:msg|message)"\s*:\s*"([^"]{0,60})"""").find(txt)?.groupValues?.get(1).orEmpty()
+        val verdict = when (code) {
+            "200" -> "✅ 放行"
+            "-460", "-462", "250" -> "⛔ 风控拦截"
+            "?" -> "⚠️无响应/非JSON"
+            else -> "· 业务拒绝(通道未被拦)"
+        }
+        line("  $tag → code=$code $verdict  $msg")
+        line("     ${txt.take(180)}")
+    }
+
+    /** A 变体：补 os=android（本项目写接口的既有做法）。 */
+    private fun androidStyle(cookie: String): String = cookieWithOs(cookie, "android")
+
+    /** 给 cookie 补/改 os 与 appver（os 是本轮要单独隔离出来的变量）。 */
+    private fun cookieWithOs(cookie: String, os: String): String {
+        val parts = LinkedHashMap<String, String>()
+        cookie.split(";").forEach { seg ->
+            val t = seg.trim(); val i = t.indexOf('=')
+            if (i > 0) parts[t.substring(0, i).trim()] = t.substring(i + 1).trim()
+        }
+        parts["os"] = os
+        parts["appver"] = "8.9.70"
+        return parts.entries.joinToString("; ") { "${it.key}=${it.value}" }
+    }
+
+    /** B 变体：剥掉 os/appver/NMTID，只保留服务端下发字段（NCMusic 的做法）。 */
+    private fun bareStyle(cookie: String): String =
+        cookie.split(";")
+            .map { it.trim() }
+            .filter { t ->
+                val k = t.substringBefore("=").trim()
+                k.isNotEmpty() && k !in setOf("os", "appver", "NMTID", "__remember_me")
+            }
+            .joinToString("; ")
+
     private companion object {
         const val UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
             "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        const val ANDROID_UA = "Mozilla/5.0 (Linux; Android 12; 25060RK16C) AppleWebKit/537.36 " +
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
     }
 }

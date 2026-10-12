@@ -21,19 +21,29 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
-/** 网易云登录方式：扫码 / Cookie 导入。 */
+/** 网易云登录方式：扫码 / 手机号验证码 / Cookie 导入。 */
 enum class NeteaseLoginTab(val label: String) {
     QR("扫码登录"),
+    PHONE("手机号"),
     COOKIE("Cookie 导入"),
 }
 
 /**
- * 网易云登录 ViewModel：扫码与 Cookie 导入两条路径在此调度。
+ * 网易云登录 ViewModel：扫码、手机号验证码与 Cookie 导入三条路径在此调度。
  *
- * ## 为什么只剩这两种
- * 一键登录（WebView 官网）与手机号（短信 / 密码）都已实测不可用：前者 WebView 拿不到
- * `MUSIC_U`（官网登录页有独立的跨域与手势校验），后者被网易云 -460/-462 动态风控拦死。
- * 与其摆两个点不动的入口误导用户，不如只留真正能走通的。
+ * ## 手机号为什么回来了
+ * v1.3.0 曾把它当"用不了"删掉。当时的结论是被 -460/-462 动态风控拦死，
+ * 但 2026-10-12 真机正交对照（`DiagActivity -e only loginprobe`）证明**归因错了**：
+ *
+ *   os=android + 安卓 UA → -462      ← 换 UA 仍 -462，说明与 UA 无关
+ *   os=android + PC  UA → -462
+ *   无 os     + 任意 UA → 400 业务拒绝（通道本身没被拦）
+ *
+ * 决定成败的只有 Cookie 里的 `os` 字段：声称自己是安卓客户端去做**登录**，
+ * 本身就是风控特征（读接口和评论写接口反而要伪装成安卓，两条路的规则相反）。
+ * 去掉 `os` 伪装后，`/weapi/sms/captcha/sent` 实测 code=200，短信真的发得出去。
+ *
+ * 一键登录（WebView 官网）仍然没加回来：它拿不到 `MUSIC_U`，与风控无关。
  *
  * 扫码也常被风控拦下，所以命中 -460/-462 时不干等：把官方给的验证页拉起来，
  * 用户过一次验证后带着 verifyToken 重放同一个登录动作。
@@ -64,6 +74,21 @@ class NeteaseLoginViewModel @Inject constructor(
     // -------- Cookie --------
     var cookieInput by mutableStateOf("")
 
+    // -------- 手机号 --------
+    var phoneInput by mutableStateOf("")
+        private set
+    var captchaInput by mutableStateOf("")
+        private set
+
+    /** 验证码是否已进入倒计时等待（发出去之后 60s 内禁用重复发送）。 */
+    var captchaSent by mutableStateOf(false)
+        private set
+
+    /** 倒计时剩余秒数；0 表示可重新发送。 */
+    var captchaCountdown by mutableStateOf(0)
+        private set
+    private var countdownJob: Job? = null
+
     // -------- 风控 --------
     /**
      * 命中 -460/-462 时网易云返回的安全验证信息（验证页地址 + token）。
@@ -93,6 +118,7 @@ class NeteaseLoginViewModel @Inject constructor(
         riskVisible = false
         // 离开扫码页就停掉轮询，别在后台空转打接口
         if (t != NeteaseLoginTab.QR) qrJob?.cancel()
+        if (t != NeteaseLoginTab.PHONE) countdownJob?.cancel()
         if (t == NeteaseLoginTab.QR && qrBitmap == null && !loggedIn) startQr()
     }
 
@@ -115,7 +141,12 @@ class NeteaseLoginViewModel @Inject constructor(
         if (!token.isNullOrBlank()) verifyToken = token
         risk = null
         error = null
-        if (tab == NeteaseLoginTab.QR) startQr()
+        when (tab) {
+            NeteaseLoginTab.QR -> startQr()
+            // 手机号登录带 token 直接重试，省得用户重新输一遍验证码
+            NeteaseLoginTab.PHONE -> if (captchaSent && captchaInput.isNotBlank()) submitCaptcha()
+            NeteaseLoginTab.COOKIE -> Unit
+        }
     }
 
     // ------------------------------------------------------------- 扫码登录
@@ -199,6 +230,82 @@ class NeteaseLoginViewModel @Inject constructor(
         }
     }
 
+    // ------------------------------------------------------------- 手机号登录
+
+    fun onPhoneChange(v: String) {
+        // 只保留数字，输错字母时不用用户自己删
+        phoneInput = v.filter { it.isDigit() }.take(11)
+        error = null
+    }
+
+    fun onCaptchaChange(v: String) {
+        captchaInput = v.filter { it.isDigit() }.take(6)
+        error = null
+    }
+
+    fun sendCaptcha() {
+        if (phoneInput.length != 11) {
+            error = "请输入 11 位手机号"
+            return
+        }
+        viewModelScope.launch {
+            busy = true
+            error = null
+            status = "正在发送验证码…"
+            val r = runCatching { auth.sendCaptcha(phoneInput) }.getOrNull()
+            busy = false
+            if (r?.success == true) {
+                status = "验证码已发送，请查收短信"
+                captchaSent = true
+                startCountdown()
+            } else {
+                status = "发送失败"
+                error = r?.message.orEmpty().ifBlank { "验证码发送失败，请稍后再试" }
+            }
+        }
+    }
+
+    private fun startCountdown() {
+        countdownJob?.cancel()
+        captchaCountdown = 60
+        countdownJob = viewModelScope.launch {
+            while (isActive && captchaCountdown > 0) {
+                delay(1000)
+                captchaCountdown -= 1
+            }
+            captchaCountdown = 0
+        }
+    }
+
+    fun submitCaptcha() {
+        if (phoneInput.length != 11) {
+            error = "请输入 11 位手机号"
+            return
+        }
+        if (captchaInput.length < 4) {
+            error = "请输入收到的验证码"
+            return
+        }
+        viewModelScope.launch {
+            busy = true
+            error = null
+            status = "正在登录…"
+            val r = runCatching { auth.loginByCaptcha(phoneInput, captchaInput, verifyToken) }.getOrNull()
+            busy = false
+            if (r?.success == true) {
+                finish(r.cookie, r.profile)
+            } else {
+                status = "登录失败"
+                error = r?.message.orEmpty().ifBlank { "登录失败，请稍后再试" }
+                // 命中风控时把验证页信息带出来，让用户过完官方验证再重试
+                r?.risk?.let {
+                    risk = it
+                    riskVisible = false
+                }
+            }
+        }
+    }
+
     // ------------------------------------------------------------- 收尾
 
     private suspend fun finish(cookie: String, profile: NeteaseProfile?) {
@@ -223,6 +330,7 @@ class NeteaseLoginViewModel @Inject constructor(
 
     override fun onCleared() {
         qrJob?.cancel()
+        countdownJob?.cancel()
     }
 
     private companion object {
