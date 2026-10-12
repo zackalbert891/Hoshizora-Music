@@ -35,6 +35,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
@@ -353,7 +354,8 @@ private fun NeteaseTopBar(
     onAlbum: (Song) -> Unit = {},
 ) {
     Row(
-        Modifier.fillMaxWidth().height(56.dp),
+        // 三行（歌名/歌手/专辑）时56dp 会把专辑行裁掉看不见，这里给自适应高度。
+        Modifier.fillMaxWidth().heightIn(min = 56.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         PressIconButton(onClick = onBack) {
@@ -372,9 +374,10 @@ private fun NeteaseTopBar(
             if (s != null) {
                 val canArtist = s.extra[com.puremusic.source.netease.EXTRA_ARTIST_ID]
                     ?.toLongOrNull()?.let { it > 0L } == true
+                // 专辑名与歌手名相同也要显示，不能再拿这个当隐藏条件。
                 val canAlbum = s.extra[com.puremusic.source.netease.EXTRA_ALBUM_ID]
                     ?.toLongOrNull()?.let { it > 0L } == true &&
-                    s.album.isNotBlank() && s.album != s.artist
+                    s.album.isNotBlank()
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     modifier = Modifier.widthIn(max = 200.dp),

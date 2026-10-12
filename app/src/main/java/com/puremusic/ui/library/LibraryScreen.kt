@@ -30,7 +30,6 @@ import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.History
-import androidx.compose.material.icons.filled.Leaderboard
 import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.Radio
 import androidx.compose.material.icons.filled.Refresh
@@ -87,7 +86,6 @@ fun LibraryScreen(
     onOpenPlaylist: (sourceId: String, id: String, name: String) -> Unit,
     onOpenSource: (sourceId: String) -> Unit,
     onSearch: () -> Unit,
-    onOpenPlayRecord: () -> Unit = {},
     onOpenNowPlaying: () -> Unit = {},
 ) {
     val vm: LibraryViewModel = hiltViewModel()
@@ -206,24 +204,6 @@ fun LibraryScreen(
                         ),
                         modifier = Modifier.weight(1f),
                         onClick = { onOpenPlaylist("hist", "history", "播放历史") },
-                    )
-                }
-            }
-
-            // 听歌排行（云端次数榜）：只有网易云有且必须登录，所以登录后才显示。
-            if (accounts[MusicSourceType.NETEASE]?.cookie?.isNotBlank() == true) {
-                item {
-                    GradientEntryCard(
-                        title = "听歌排行",
-                        subtitle = "云端播放次数榜",
-                        icon = Icons.Filled.Leaderboard,
-                        gradient = Brush.linearGradient(
-                            listOf(Color(0xFFFF8A4C), Color(0xFFE23A3A)),
-                        ),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = UiTokens.SpaceL, vertical = UiTokens.SpaceS),
-                        onClick = onOpenPlayRecord,
                     )
                 }
             }

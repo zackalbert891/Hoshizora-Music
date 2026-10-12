@@ -8,7 +8,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import com.puremusic.model.Song
 import java.io.StringReader
 import java.net.URLEncoder
 import javax.inject.Inject
@@ -92,35 +91,6 @@ class NeteaseEntity @Inject constructor(
         )
     }
 
-    /**
-     * 听歌排行（歌曲播放次数榜）。
-     *
-     * 端点：裸 GET `/api/v1/play/record?uid=<uid>&type=<0|1>`，
-     * `type=1` 本周、`type=0` 所有时间。**必须带 type**，缺了服务端返回
-     * `{"code":-2,"msg":"无权限访问"}` —— 之前「听歌记录一直是空的」就是漏了这个参数。
-     * 也必须带登录 Cookie（匿名一律 -2）。
-     *
-     * 只给「次数」，**服务端不返回时间戳**，所以做不了「最近播放」；
-     * 最近播放只能靠本地播放历史（见 `HistoryDao`）。收听时长同样没有官方接口，
-     * 只能客户端自己累加 —— 第三方 NCMusic 项目也是这么做的。
-     */
-    suspend fun playRecord(
-        uid: String,
-        weekly: Boolean = false,
-        limit: Int = 100,
-        cookie: String? = null,
-    ): List<NeteasePlayRecord> = withContext(Dispatchers.IO) {
-        if (uid.isBlank() || uid == "0") return@withContext emptyList()
-        val type = if (weekly) 1 else 0
-        val root = getJson("$PLAY_RECORD_PATH?uid=$uid&type=$type&limit=$limit", cookie)
-            ?: return@withContext emptyList()
-        val arr = root.getAsJsonArray("record")
-            ?: root.getAsJsonArray("allData")
-            ?: return@withContext emptyList()
-        arr.mapNotNull { runCatching { it.asJsonObject.toPlayRecord() }.getOrNull() }
-            .filter { it.songId > 0L }
-    }
-
     // ═══════════════════════════════════════════════════════════════
     //  HTTP
     // ═══════════════════════════════════════════════════════════════
@@ -189,40 +159,11 @@ class NeteaseEntity @Inject constructor(
         )
     }
 
-    /** `record[]` 元素：songId / playCount + 歌曲快照（ar / al）。 */
-    private fun JsonObject.toPlayRecord(): NeteasePlayRecord? {
-        val song = runCatching { gson.fromJson(this, NeteaseSong::class.java) }.getOrNull()
-            ?: return null
-        val artistName = (song.ar ?: song.artists)
-            ?.joinToString(" / ") { it.name }.orEmpty().ifBlank { "未知歌手" }
-        val albumObj = song.al ?: song.album
-        return NeteasePlayRecord(
-            songId = song.id,
-            playCount = long("playCount"),
-            song = Song(
-                source = com.puremusic.model.MusicSourceType.NETEASE,
-                id = song.id.toString(),
-                title = song.name,
-                artist = artistName,
-                album = albumObj?.name ?: "",
-                coverUrl = albumObj?.picUrl ?: "",
-                durationMs = if (song.dt > 0L) song.dt else song.duration,
-                extra = buildMap {
-                    (song.ar ?: song.artists)?.firstOrNull()?.id?.takeIf { it > 0L }
-                        ?.let { put(EXTRA_ARTIST_ID, it.toString()) }
-                    albumObj?.id?.takeIf { it > 0L }?.let { put(EXTRA_ALBUM_ID, it.toString()) }
-                },
-            ),
-        )
-    }
-
     companion object {
         private const val TAG = "NeteaseEntity"
         private const val HOST = "https://music.163.com"
         private const val ARTIST_PATH = "/api/v1/artist"
         private const val ARTIST_ALBUMS_PATH = "/api/artist/albums"
         private const val ALBUM_PATH = "/api/v1/album"
-        /** 听歌排行：必须带 `type`（0=所有时间 1=本周），否则 -2 无权限。 */
-        private const val PLAY_RECORD_PATH = "/api/v1/play/record"
     }
 }

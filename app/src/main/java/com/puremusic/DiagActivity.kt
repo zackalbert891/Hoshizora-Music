@@ -88,10 +88,9 @@ class DiagActivity : ComponentActivity() {
                 )
                 "neteaseassets" -> runNeteaseAssets()
                 "loginprobe" -> runLoginProbe()
-                // 歌手 / 专辑 / 听歌排行 三个新页面层的数据探针：
+                // 歌手 / 专辑页层的数据探针：
                 // adb shell am start -n com.puremusic/.DiagActivity -e only entity -e a 6452 -e al 34720827
                 "entity" -> runEntityProbe()
-                "playrecord" -> runPlayRecordProbe()
                 else -> runDiag()
             }
             tv.text = out.toString()
@@ -141,31 +140,8 @@ class DiagActivity : ComponentActivity() {
         tvUpdate()
     }
 
-    /** 听歌排行探针（需要登录 Cookie + uid）。 */
-    private suspend fun runPlayRecordProbe() = withContext(Dispatchers.IO) {
-        accounts.awaitLoaded()
-        val acc = accounts.accounts.value[com.puremusic.model.MusicSourceType.NETEASE]
-        val cookie = acc?.cookie.orEmpty()
-        val uid = acc?.userId?.takeIf { it.isNotBlank() }
-            ?: Regex("(?:^|;)\\s*uid=([^;]*)").find(cookie)?.groupValues?.get(1).orEmpty()
-        line("uid=$uid cookie=${if (cookie.isBlank()) "空" else "有(${cookie.length})"}")
-        if (uid.isBlank() || uid == "0") {
-            line("读不到 uid，退出")
-            tvUpdate()
-            return@withContext
-        }
-        listOf(false to "所有时间", true to "本周").forEach { (weekly, label) ->
-            val list = neteaseEntity.playRecord(uid, weekly, cookie = cookie)
-            line("$label: ${list.size} 条")
-            list.take(5).forEach { r ->
-                line("  ${r.playCount}次  ${r.song.title} - ${r.song.artist}")
-            }
-        }
-        tvUpdate()
-    }
-
-    /**
- * 网易云「我的音乐资产」五接口探针。
+/**
+     * 网易云「我的音乐资产」五接口探针。
  *
  * 一次跑完红心 / 听歌排行 / 最近播放 / 每日推荐 / 私人FM，各自打印数量与样本，
  * 用来判断哪些接口在真机网络下真的通（电脑出口 IP 常被风控，只能真机验证）。

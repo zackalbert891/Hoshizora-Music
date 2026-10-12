@@ -61,7 +61,6 @@ import com.puremusic.ui.components.MiniPlayer
 import com.puremusic.ui.discover.DiscoverScreen
 import com.puremusic.ui.entity.AlbumScreen
 import com.puremusic.ui.entity.ArtistScreen
-import com.puremusic.ui.entity.PlayRecordScreen
 import com.puremusic.ui.theme.GlassLevel
 import com.puremusic.ui.theme.LocalGlassBackdrops
 import com.puremusic.ui.theme.LocalLiquidGlass
@@ -99,8 +98,6 @@ object Destinations {
     const val ARTIST = "artist/{artistId}"
     /** 专辑页（网易云 `/api/v1/album/<id>`）。 */
     const val ALBUM = "album/{albumId}"
-    /** 听歌排行（网易云 `/api/v1/play/record`，需登录）。 */
-    const val PLAY_RECORD = "playrecord"
 
     fun artist(artistId: String) = "artist/$artistId"
 
@@ -251,7 +248,6 @@ fun AppRoot() {
                         },
                         onOpenSource = { sourceId -> navController.navigate(Destinations.source(sourceId)) },
                         onSearch = { navController.navigate(Destinations.search()) },
-                        onOpenPlayRecord = { navController.navigate(Destinations.PLAY_RECORD) },
                         onOpenNowPlaying = { navController.navigate(Destinations.NOW_PLAYING) },
                     )
                 }
@@ -369,13 +365,6 @@ fun AppRoot() {
                         onLogin = { navController.navigate(Destinations.NETEASE_LOGIN) },
                         onOpenArtist = { aid -> navController.navigate(Destinations.artist(aid)) },
                         onOpenAlbum = { alId -> navController.navigate(Destinations.album(alId)) },
-                    )
-                }
-                composable(Destinations.PLAY_RECORD) {
-                    PlayRecordScreen(
-                        onBack = { navController.popBackStack() },
-                        onLogin = { navController.navigate(Destinations.NETEASE_LOGIN) },
-                        onOpenNowPlaying = { navController.navigate(Destinations.NOW_PLAYING) },
                     )
                 }
                 composable(

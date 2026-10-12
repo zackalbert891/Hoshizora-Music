@@ -42,14 +42,3 @@ data class NeteaseAlbumFull(
     val publishTime: Long = 0L,
     val songs: List<NeteaseSong> = emptyList(),
 )
-
-/**
- * 听歌排行的一条（`/api/v1/play/record`）。
- *
- * 只有次数、没有时间戳，所以只能排行，**做不了「最近播放」**。
- */
-data class NeteasePlayRecord(
-    val songId: Long,
-    val playCount: Long,
-    val song: Song,
-)
