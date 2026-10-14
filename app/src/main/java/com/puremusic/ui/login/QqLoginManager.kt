@@ -214,6 +214,9 @@ class QqLoginManager @Inject constructor(
         failPrefix: String = "获取登录凭证失败",
         loginType: Int = LOGIN_TYPE_QQ,
     ): QqLoginResult {
+        // 完整响应必须可观测：服务端到底发了哪些鉴权字段，直接决定取流能否带上
+        // 正确的票据。缺 uin / qm_keyst 的表现就是「登录成功但 VIP 歌 101404」。
+        android.util.Log.e("QqVipProbe", "登录/续期响应原文: ${json.take(3000)}")
         val resp = runCatching {
             gson.fromJson(normalizeCgiJson(json), LoginResp::class.java)
         }.getOrNull() ?: return QqLoginResult("ERROR", message = "登录响应解析失败")
@@ -242,6 +245,10 @@ class QqLoginManager @Inject constructor(
             "tmeLoginType=$loginType",
             "loginType=$loginType",
             "loginMethod=${loginMethodOf(loginType)}",
+            // guid 必须在登录时就固定下来并持久化。
+            // 取流（CgiGetVkey）要求 guid 与登录态一致，否则服务端判为异常请求返回 101404；
+            // 以前没有这个字段，取流只能临时用一个进程级随机 guid —— 重启即变，权益时好时坏。
+            "guid=${newGuid()}",
         ).joinToString("; ")
         return QqLoginResult(
             status = "DONE",
@@ -277,6 +284,9 @@ class QqLoginManager @Inject constructor(
                 "ERROR", message = "缺少 refresh_key，无法自动续期，请重新登录",
             )
         }
+        // 续期必须沿用原账号的登录体系：写死 2 会把原生账号（0）降级成第三方授权，
+        // 续期后虽然登录成功，但绿钻/SVIP 权益已被服务端判失。
+        val savedType = cookieField(cookie, "tmeLoginType").toIntOrNull() ?: LOGIN_TYPE_QQ
         val param = JsonObject().apply {
             addProperty("openid", cookieField(cookie, "openid"))
             addProperty("access_token", cookieField(cookie, "access_token"))
@@ -284,7 +294,7 @@ class QqLoginManager @Inject constructor(
             addProperty("musickey", musickey)
             addProperty("refresh_key", refreshKey)
             addProperty("str_musicid", account.userId)
-            addProperty("loginType", 2)
+            addProperty("loginType", savedType)
         }
         val req = JsonObject().apply {
             addProperty("module", "music.login.LoginServer")
@@ -292,7 +302,8 @@ class QqLoginManager @Inject constructor(
             add("param", param)
         }
         val comm = JsonObject().apply {
-            addProperty("tmeLoginType", 2)
+            addProperty("tmeLoginType", savedType)
+            addProperty("tmeLoginMethod", loginMethodOf(savedType))
             addProperty("format", "json")
             addProperty("ct", 23)
             addProperty("cv", 0)
@@ -303,12 +314,15 @@ class QqLoginManager @Inject constructor(
         }
         val text = cgiPost(gson.toJson(body), cookie)
             ?: return@withContext QqLoginResult("ERROR", message = "网络异常，凭证续期请求失败")
+        // 完整响应必须可观测：登录/续期到底给了哪些字段（uin / qm_keyst / qqmusic_key 等），
+        // 直接决定取流能不能带上正确的鉴权票据 —— 少了哪个都表现为「有会员却 101404」。
+        android.util.Log.e("QqVipProbe", "续期完整响应(type=$savedType): $text")
         // 续期响应含敏感凭证，仅解析状态，不打印原文。
         // 登录类型沿用原账号的，否则取流会把原生账号的 VIP 权益判成第三方授权。
         val result = parseCredential(
             text,
             failPrefix = "凭证续期失败",
-            loginType = cookieField(cookie, "tmeLoginType").toIntOrNull() ?: LOGIN_TYPE_QQ,
+            loginType = savedType,
         )
         if (result.status != "DONE") return@withContext result
         // 续期只更新鉴权相关字段，会话 cookie（uin / guid / p_skey 等）保持原样
@@ -433,6 +447,9 @@ class QqLoginManager @Inject constructor(
         /** 与登录类型配套的 tmeLoginMethod（取流 comm 需一并带上）。 */
         fun loginMethodOf(loginType: Int): Int =
             if (loginType == LOGIN_TYPE_NATIVE) 3 else 2
+
+        /** 生成 QQ 惯例的 10 位数字 guid（登录时固定并写入 cookie，取流沿用）。 */
+        fun newGuid(): String = (1000000000L..9999999999L).random().toString()
 
         fun hash33(s: String, h: Int = 0): Int {
             var result = h

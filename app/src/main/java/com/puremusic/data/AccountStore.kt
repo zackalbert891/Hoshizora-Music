@@ -89,6 +89,14 @@ class AccountStore @Inject constructor(
         context.accountsDataStore.edit { p ->
             p[stringPreferencesKey(account.source.id)] = gson.toJson(account)
         }
+        // 同步刷新内存快照。DataStore 的 collect 是异步的，只写盘的话，
+        // 「保存后立刻读 accounts」拿到的还是旧值 —— 例如补写完 guid 马上取流，
+        // 用的仍是缺 guid 的旧 cookie。持久化值随后回流，结果一致，无副作用。
+        _accounts.value = _accounts.value + (account.source to account)
+        if (account.source == MusicSourceType.NETEASE) {
+            _neteaseCookie.value = account.cookie
+            currentNeteaseCookie = account.cookie
+        }
     }
 
     suspend fun remove(source: MusicSourceType) {

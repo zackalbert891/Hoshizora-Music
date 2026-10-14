@@ -250,6 +250,7 @@ class QqMusicSource @Inject constructor(
     private suspend fun getQqMusicUrl(song: Song): String? = withContext(Dispatchers.IO) {
         // 先确保登录态已从磁盘加载：否则冷启动后立刻点歌会按匿名取流，版权歌一律失败
         accountStore.awaitLoaded()
+        migrateGuidIfNeeded()
         // 跨源换源后的歌曲真实平台 id 在 extra["srcId"]（原 id 已保留给上层 UI）
         val songMid = song.extra[com.puremusic.source.autoswitch.AutoSwitchSource.SRC_ID_KEY] ?: song.id
         val mediaMid = song.extra[MEDIA_MID_KEY]?.takeIf { it.isNotBlank() }
@@ -349,8 +350,10 @@ class QqMusicSource @Inject constructor(
         val authst = listOf("qqmusic_key", "qm_keyst", "musickey")
             .map { cookieField(cookie, it) }.firstOrNull { it.isNotBlank() }.orEmpty()
         for (filename in filenames) {
-            // ct/cv 与搜索同理：11/11 才能被后端当作合法 PC 客户端，否则 purl 恒空（result=104003）
-            val commFields = commFields(uin, cookie, authst)
+            // ct/cv 必须 24/0（与搜索的 11/11 相反）：真机实测取流用 11/11 时，
+            // 无论登录态还是匿名、无论免费歌还是 VIP 歌，一律 result=101404；
+            // 换成 24/0 后同一账号同一首歌立刻 result=0 拿到直链。
+            val commFields = commFields(uin, cookie, authst, ct = 24, cv = 0)
             val json = """{"req_1":{"module":"vkey.GetVkeyServer","method":"CgiGetVkey","param":{"filename":["$filename"],"guid":"$guid","songmid":["$songMid"],"songtype":[0],"uin":"$uin","loginflag":1,"platform":"20"}},"loginUin":"$uin","comm":{$commFields}}"""
             // guid 必须随 cookie 一起下发，否则服务端返回 104009 invalidq 拒绝取流
             val fullCookie = if (cookie.isNotBlank() && !cookie.contains("guid=")) {
@@ -369,6 +372,13 @@ class QqMusicSource @Inject constructor(
                     "ck=${fullCookie.isNotBlank()} :: ${text.take(1400)}",
             )
             if (hasCredentialExpiredCode(text)) expired = true
+            // 播放路径的取流结果必须可观测：purl 是否非空、result 是多少，
+            // 直接对应「这首歌到底能不能播」。以前只有 Log.d，release 包会被优化掉。
+            android.util.Log.e(
+                "QqVipProbe",
+                "播放取流 songmid=$songMid file=$filename uin=$uin ct=24/0 " +
+                    "authst=${authst.isNotBlank()} :: ${text.take(600)}",
+            )
             val resp = runCatching { gson.fromJson(text, QqVkeyResponse::class.java) }
                 .getOrNull() ?: continue
             val data = resp.req_1?.data ?: continue
@@ -395,19 +405,44 @@ class QqMusicSource @Inject constructor(
         cookieField(cookie, "guid").takeIf { it.isNotBlank() } ?: SESSION_GUID
 
     /**
+     * 老账号迁移：早期版本登录 / 手动粘贴的 cookie 没有 guid，补一个稳定值并回写。
+     *
+     * 不补的话取流只能用 [SESSION_GUID]（进程级随机），进程一重启就变，
+     * 服务端把这当成「登录态与设备不一致」，权益判定会不稳定。
+     */
+    private suspend fun migrateGuidIfNeeded() {
+        val account = accountStore.accounts.value[type] ?: return
+        val cookie = account.cookie
+        if (cookie.isBlank() || Regex("""(?:^|;)\s*guid=""").containsMatchIn(cookie)) return
+        accountStore.save(account.copy(cookie = "$cookie; guid=${QqLoginManager.newGuid()}"))
+        android.util.Log.d("QqMusic", "该账号 cookie 缺 guid，已补写稳定值")
+    }
+
+    /**
      * 构造 CGI 的 comm 段。
      *
      * **tmeLoginType / tmeLoginMethod 必须沿用登录时的账号体系**，不能写死：
      * 手机号登录走原生账号（0），扫码登录走 QQ 互联 OAuth（2），二者是两套权益校验。
      * 以前这里写死 2，于是「原生账号登录后明明有会员，取流却被判成第三方授权」，
      * 表现为 vkey 恒 result=101404 —— 即所谓的「QQ 登录了但没有 VIP 权益」。
+     *
+     * **ct/cv 按接口区分，绝不能互相照搬**（真机实测，2026-10-14）：
+     * - 搜索 / 歌单等 `music.*` 接口：必须 11/11，否则 meta.sum 恒 0、结果为空；
+     * - 取流 `vkey.GetVkeyServer`：必须 **24/0**。用 11/11 会一律 result=101404，
+     *   **连免费歌都取不到**，极易被误判成"账号没有会员权益"。
      */
-    private fun commFields(uin: String, cookie: String, authst: String): String {
+    private fun commFields(
+        uin: String,
+        cookie: String,
+        authst: String,
+        ct: Int = 11,
+        cv: Int = 11,
+    ): String {
         val loginType = cookieField(cookie, "tmeLoginType").toIntOrNull()
             ?: QqLoginManager.LOGIN_TYPE_QQ
         val method = QqLoginManager.loginMethodOf(loginType)
         return buildString {
-            append("\"uin\":\"$uin\",\"format\":\"json\",\"ct\":11,\"cv\":11")
+            append("\"uin\":\"$uin\",\"format\":\"json\",\"ct\":$ct,\"cv\":$cv")
             append(",\"tmeLoginType\":$loginType,\"tmeLoginMethod\":$method")
             if (authst.isNotBlank()) append(",\"authst\":\"$authst\"")
         }
@@ -425,6 +460,8 @@ class QqMusicSource @Inject constructor(
      */
     suspend fun probeVip(): QqVipProbeResult = withContext(Dispatchers.IO) {
         accountStore.awaitLoaded()
+        // 先补齐 guid 再测：否则测的还是「临时 guid」的旧状态，结论不可信
+        migrateGuidIfNeeded()
         val account = accountStore.accounts.value[type]
         val cookie = account?.cookie.orEmpty()
         if (cookie.isBlank()) {
@@ -440,32 +477,131 @@ class QqMusicSource @Inject constructor(
         val guid = cookieField(cookie, "guid").takeIf { it.isNotBlank() } ?: SESSION_GUID
 
         val lines = mutableListOf<String>()
-        lines += "uin=$uin  authst=${authst.isNotBlank()}  已存 tmeLoginType=${savedType ?: "无"}"
+        val hasGuid = Regex("""(?:^|;)\s*guid=""").containsMatchIn(cookie)
+        lines += "uin=$uin  authst=${authst.isNotBlank()}  guid=${if (hasGuid) "有" else "无"}"
+        lines += "已存 tmeLoginType=${savedType ?: "无"}（无 = 旧版登录的账号）"
         lines += "cookie 键: $keys"
         // 先试账号自身记录的类型，再穷举另外两种，保证至少能找到一组可用参数
         val types = listOfNotNull(savedType, QqLoginManager.LOGIN_TYPE_NATIVE, QqLoginManager.LOGIN_TYPE_QQ)
             .distinct()
+        var anyOk = false
+        var firstRaw = ""
         for (loginType in types) {
             val methods = listOf(QqLoginManager.loginMethodOf(loginType), 3, 2).distinct()
             for (method in methods) {
                 for (fn in listOf("F000$PROBE_MEDIA_MID.flac", "M800$PROBE_MEDIA_MID.mp3")) {
-                    val (purl, result) = rawVkey(
+                    val (purl, result, raw) = rawVkey(
                         PROBE_SONG_MID, cookie, uin, guid, fn, loginType, method, authst,
                     )
                     val tag = fn.substring(0, 4)
                     lines += "type=$loginType method=$method $tag -> purl=${purl != null} result=$result"
-                    if (purl != null) lines += "  直链: ${purl.take(70)}…"
+                    if (purl != null) {
+                        lines += "  直链: ${purl.take(70)}…"
+                        anyOk = true
+                    }
+                    if (firstRaw.isBlank()) firstRaw = raw
                 }
+            }
+        }
+        // ct/cv 横比（本次排查的关键）：取流必须 24/0。
+        // 用 11/11 时无论登录态/匿名、免费歌/VIP 歌，一律 result=101404 ——
+        // 这个假象曾让人误判成「账号没有会员权益」。
+        if (authst.isNotBlank()) {
+            for (loginType in listOf(QqLoginManager.LOGIN_TYPE_NATIVE, QqLoginManager.LOGIN_TYPE_QQ)) {
+                for (fn in listOf("F000$PROBE_MEDIA_MID.flac", "M800$PROBE_MEDIA_MID.mp3")) {
+                    val (p, r, _) = rawVkey(
+                        PROBE_SONG_MID, cookie, uin, guid, fn, loginType,
+                        QqLoginManager.loginMethodOf(loginType), authst, 24, 0,
+                    )
+                    lines += "《晴天》type=$loginType ct=24/0 ${fn.substring(0, 4)} -> purl=${p != null} result=$r"
+                    if (p != null) {
+                        lines += "  直链: ${p.take(70)}…"
+                        anyOk = true
+                    }
+                }
+            }
+        }
+        // 诊断①：完整响应。result 只说明「这首歌有没有权益」，顶层 retcode 才说明
+        // 「请求链路通不通」——101404 配 retcode=0 是权益问题，配非 0 是请求构造问题。
+        // 长 JSON 必须折行：一行上千字符的无空格文本会把对话框布局拖坏。
+        if (firstRaw.isNotBlank()) {
+            lines += ""
+            lines += "—— 首组完整响应（看 retcode）——"
+            lines += firstRaw.replace('\n', ' ').take(1000).chunked(60)
+        }
+        // 诊断②：uin 取值。手机号登录只返回 musicid（开放平台 id），没有真实 QQ 号；
+        // encryptUin 是加密的 QQ 号，若只有它做 uin 时取得到，说明 uin 一直传错了。
+        val encUin = cookieField(cookie, "encryptUin")
+        if (encUin.isNotBlank()) {
+            val t = savedType ?: QqLoginManager.LOGIN_TYPE_NATIVE
+            val (p, r, _) = rawVkey(
+                PROBE_SONG_MID, cookie, encUin, guid, "M800$PROBE_MEDIA_MID.mp3",
+                t, QqLoginManager.loginMethodOf(t), authst,
+            )
+            lines += "uin=encryptUin -> purl=${p != null} result=$r"
+        }
+        // 诊断③：免费歌对照。《晴天》是 VIP 曲目，101404 说明不了链路问题；
+        // 换一首普通曲目分别用「匿名」和「登录态」取流：
+        //   匿名必须用随机 10 位 uin —— uin=0 会被服务端直接拒，不能当对照基线；
+        //   登录态用当前账号，能取到就说明链路对账号是通的，问题只在权益曲目。
+        val free = runCatching { searchViaCgi("月亮之上", 1).firstOrNull() }.getOrNull()
+        if (free != null) {
+            val fm = free.extra[MEDIA_MID_KEY]?.takeIf { it.isNotBlank() } ?: free.id
+            val anonUin = QqLoginManager.newGuid()
+            val t = savedType ?: QqLoginManager.LOGIN_TYPE_NATIVE
+            // ct/cv 横比：搜索必须 11/11，取流未必 —— 拿同一首歌、同一账号，
+            // 只换客户端标识，看哪一组能给出 purl。
+            for ((ct, cv) in listOf(11 to 11, 24 to 0, 12 to 0)) {
+                val (fp, fr, fraw) = rawVkey(
+                    free.id, cookie, uin, guid, "M500$fm.mp3",
+                    t, QqLoginManager.loginMethodOf(t), authst, ct, cv,
+                )
+                lines += "免费歌 登录态 ct=$ct/cv=$cv -> purl=${fp != null} result=$fr"
+                if (fraw.isNotBlank()) lines += fraw.replace('\n', ' ').take(300).chunked(60)
+            }
+            for ((ct, cv) in listOf(11 to 11, 24 to 0)) {
+                val (fp, fr, fraw) = rawVkey(
+                    free.id, "", anonUin, anonUin, "M500$fm.mp3", 2, 2, "", ct, cv,
+                )
+                lines += "免费歌 匿名   ct=$ct/cv=$cv -> purl=${fp != null} result=$fr"
+                if (fraw.isNotBlank()) lines += fraw.replace('\n', ' ').take(300).chunked(60)
+            }
+        } else {
+            lines += ""
+            lines += "免费歌对照：搜索失败，无法判断链路"
+        }
+        // 诊断④：主动续期一次。完整响应能看出服务端到底发了哪些鉴权字段
+        // （uin / qm_keyst / qqmusic_key）—— 这是取流权益的直接来源。
+        val refreshed = account?.let { runCatching { qqLogin.refreshCredential(it) }.getOrNull() }
+        lines += ""
+        lines += if (refreshed != null && refreshed.status == "DONE") {
+            "续期成功 musicid=${refreshed.musicid}（完整响应见 logcat QqVipProbe）"
+        } else {
+            "续期失败: ${refreshed?.message ?: "无响应"}"
+        }
+        if (!anyOk) {
+            // 关键结论：所有参数组合都取不到，说明问题不在请求参数，而在登录通道本身
+            lines += ""
+            if (!hasGuid) lines += "· 该账号 cookie 缺 guid，重新登录后会补上并固定。"
+            val oauth = cookie.contains("pt_oauth_token") || cookie.contains("pt_login_type")
+            if (oauth) {
+                lines += "· 当前是扫码（QQ 互联第三方授权）登录 —— 这类凭证服务端不发放会员权益，"
+                lines += "  换参数也无效。请退出登录，改用「手机号登录」重新登录后再检测。"
+            } else {
+                lines += "· 凭证可能已过期或账号本身无该曲目的会员权益。"
             }
         }
         QqVipProbeResult(true, uin, savedType, keys, lines)
     }
 
     /**
-     * 发一次 vkey 请求并返回（完整播放直链，result 码）。
+     * 发一次 vkey 请求并返回（完整播放直链，result 码，**原始响应**）。
      *
      * 与 [requestVkeyUrl] 的区别：**不做 30 秒试听降级**，purl 为空就是没权益，
      * 这样探针才能如实区分「能播完整版」和「只有试听」。
+     *
+     * 第三项原始响应是给探针做深度诊断用的：`result` 只代表「这首歌有没有权益」，
+     * 而顶层 `retcode` 才代表「请求链路本身通不通」——两者混在一起看极易误判。
      */
     private suspend fun rawVkey(
         songMid: String,
@@ -476,9 +612,13 @@ class QqMusicSource @Inject constructor(
         loginType: Int,
         loginMethod: Int,
         authst: String,
-    ): Pair<String?, Int?> = withContext(Dispatchers.IO) {
+        // ct/cv 是客户端标识，**搜索和取流不是同一套**：搜索实测必须 11/11，
+        // 而取流的开源实现（含 qqmusic-dl 等）普遍用 24/0。写成参数以便探针横比。
+        ct: Int = 11,
+        cv: Int = 11,
+    ): Triple<String?, Int?, String> = withContext(Dispatchers.IO) {
         val comm = buildString {
-            append("\"uin\":\"$uin\",\"format\":\"json\",\"ct\":11,\"cv\":11")
+            append("\"uin\":\"$uin\",\"format\":\"json\",\"ct\":$ct,\"cv\":$cv")
             append(",\"tmeLoginType\":$loginType,\"tmeLoginMethod\":$loginMethod")
             if (authst.isNotBlank()) append(",\"authst\":\"$authst\"")
         }
@@ -490,14 +630,16 @@ class QqMusicSource @Inject constructor(
             .header("Referer", "https://y.qq.com/")
         if (fullCookie.isNotBlank()) builder.header("Cookie", fullCookie)
         val text = runCatching { client.newCall(builder.build()).execute().body?.string() }
-            .getOrNull() ?: return@withContext null to null
+            .getOrNull() ?: return@withContext Triple(null, null, "")
+        // 诊断日志：完整响应是定位 101404 的唯一依据（result 只说权益，retcode 才说链路）
+        android.util.Log.e("QqVipProbe", "vkey uin=$uin type=$loginType/$loginMethod fn=$filename :: $text")
         val resp = runCatching { gson.fromJson(text, QqVkeyResponse::class.java) }.getOrNull()
-        val data = resp?.req_1?.data ?: return@withContext null to null
-        val info = data.midurlinfo?.firstOrNull() ?: return@withContext null to null
+        val data = resp?.req_1?.data ?: return@withContext Triple(null, null, text)
+        val info = data.midurlinfo?.firstOrNull() ?: return@withContext Triple(null, null, text)
         val sip = data.sip?.firstOrNull() ?: "http://aqqmusic.tc.qq.com/"
         val purl = info.purl?.takeIf { it.isNotBlank() }
             ?.let { (sip + it).replaceFirst("http://", "https://") }
-        purl to info.result
+        Triple(purl, info.result, text)
     }
 
     /** 从 cookie 串中读取单个键值（与 QqLoginManager.cookieField 同义）。 */

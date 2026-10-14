@@ -58,10 +58,14 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             _vipProbe.value = "正在检测会员权益…"
             val result = runCatching { qqSource.probeVip() }.getOrElse { e ->
+                android.util.Log.e("QqVipProbe", "probeVip 抛异常", e)
                 _vipProbe.value = "检测失败：${e.message}"
                 return@launch
             }
-            _vipProbe.value = result.lines.joinToString("\n")
+            android.util.Log.e("QqVipProbe", "探针完成 lines=${result.lines.size} loggedIn=${result.loggedIn}")
+            val joined = result.lines.joinToString("\n")
+            android.util.Log.e("QqVipProbe", "结果全文(${joined.length}字):\n$joined")
+            _vipProbe.value = joined
         }
     }
 
@@ -213,9 +217,13 @@ class SettingsViewModel @Inject constructor(
         val uin = Regex("""(?:uin|p_uin)=o?0*(\d+)""").find(trimmed)
             ?.groupValues?.get(1)
             ?: Regex("""musicid=(\d+)""").find(trimmed)?.groupValues?.get(1).orEmpty()
+        // 浏览器里复制的 cookie 一般不带 guid，补一个再落盘：
+        // vkey 取流要求 guid 与登录态一致，缺失时只能临时用进程级随机值，权益会时好时坏。
+        val withGuid = if (Regex("""(?:^|;)\s*guid=""").containsMatchIn(trimmed)) trimmed
+        else "$trimmed; guid=${QqLoginManager.newGuid()}"
         viewModelScope.launch {
             accountStore.save(
-                Account(source = MusicSourceType.QQ, userId = uin, cookie = trimmed)
+                Account(source = MusicSourceType.QQ, userId = uin, cookie = withGuid)
             )
         }
     }
