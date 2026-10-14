@@ -160,7 +160,8 @@ class QqLoginManager @Inject constructor(
         ).execute()
         val cgiText = cgiResp.body?.string().orEmpty()
         // 登录响应含敏感凭证（musickey / p_skey 等），仅解析状态，不打印原文
-        val result = parseCredential(cgiText)
+        // 扫码走 QQ 互联 OAuth：登录类型固定为 2（第三方授权）
+        val result = parseCredential(cgiText, loginType = LOGIN_TYPE_QQ)
         // 合并 QQ 会话 cookie（p_skey/skey/ptcz 等），VIP 判定需要完整 cookie
         val extra = listOf(checkCookies, sessionCookies).filter { it.isNotBlank() }.joinToString("; ")
         // 真实 QQ 号（uin）必须写入 cookie：vkey 取流（CgiGetVkey）的 param.uin / comm.uin 要用它，
@@ -191,7 +192,9 @@ class QqLoginManager @Inject constructor(
     suspend fun phoneLogin(phone: String, code: String): QqLoginResult = withContext(Dispatchers.IO) {
         val json = """{"req_0":{"module":"music.login.LoginServer","method":"Login","param":{"code":"$code","loginMode":1,"phoneNo":"$phone"}},"comm":{"tmeLoginMethod":3,"tmeLoginType":0,"format":"json","ct":23,"cv":0}}"""
         val resp = cgiPost(json, "") ?: return@withContext QqLoginResult("ERROR", message = "网络异常，请重试")
-        parseCredential(resp)
+        // 原生账号体系：登录类型 0。取流必须沿用同一个 tmeLoginType，
+        // 否则服务端按「QQ 互联第三方授权」处理，绿钻/SVIP 权益不生效（vkey 恒 101404）。
+        parseCredential(resp, loginType = LOGIN_TYPE_NATIVE)
     }
 
     private suspend fun cgiPost(json: String, cookie: String): String? = withContext(Dispatchers.IO) {
@@ -203,7 +206,14 @@ class QqLoginManager @Inject constructor(
         runCatching { client.newCall(builder.build()).execute().body?.string() }.getOrNull()
     }
 
-    private fun parseCredential(json: String, failPrefix: String = "获取登录凭证失败"): QqLoginResult {
+    /**
+     * @param loginType 本次登录的账号体系类型，会写进 cookie 供后续取流沿用。
+     */
+    private fun parseCredential(
+        json: String,
+        failPrefix: String = "获取登录凭证失败",
+        loginType: Int = LOGIN_TYPE_QQ,
+    ): QqLoginResult {
         val resp = runCatching {
             gson.fromJson(normalizeCgiJson(json), LoginResp::class.java)
         }.getOrNull() ?: return QqLoginResult("ERROR", message = "登录响应解析失败")
@@ -227,6 +237,11 @@ class QqLoginManager @Inject constructor(
             "access_token=${d.access_token.orEmpty()}",
             "unionid=${d.unionid.orEmpty()}",
             "encryptUin=${d.encryptUin.orEmpty()}",
+            // 登录类型必须持久化：取流（CgiGetVkey）的 comm.tmeLoginType 要与登录时一致，
+            // 否则原生账号（0）登录的绿钻/SVIP 权益会被服务端判为第三方授权（2）而失效。
+            "tmeLoginType=$loginType",
+            "loginType=$loginType",
+            "loginMethod=${loginMethodOf(loginType)}",
         ).joinToString("; ")
         return QqLoginResult(
             status = "DONE",
@@ -288,8 +303,13 @@ class QqLoginManager @Inject constructor(
         }
         val text = cgiPost(gson.toJson(body), cookie)
             ?: return@withContext QqLoginResult("ERROR", message = "网络异常，凭证续期请求失败")
-        // 续期响应含敏感凭证，仅解析状态，不打印原文
-        val result = parseCredential(text, failPrefix = "凭证续期失败")
+        // 续期响应含敏感凭证，仅解析状态，不打印原文。
+        // 登录类型沿用原账号的，否则取流会把原生账号的 VIP 权益判成第三方授权。
+        val result = parseCredential(
+            text,
+            failPrefix = "凭证续期失败",
+            loginType = cookieField(cookie, "tmeLoginType").toIntOrNull() ?: LOGIN_TYPE_QQ,
+        )
         if (result.status != "DONE") return@withContext result
         // 续期只更新鉴权相关字段，会话 cookie（uin / guid / p_skey 等）保持原样
         val merged = mergeCookie(
@@ -401,6 +421,19 @@ class QqLoginManager @Inject constructor(
     }
 
     companion object {
+        /**
+         * 账号体系类型。写进 cookie 供 QqMusicSource 取流时沿用。
+         *
+         * 这两个值决定了服务端按哪种登录态校验权益：
+         * 用 0（原生）登录却按 2（第三方授权）取流，绿钻/SVIP 一律不生效。
+         */
+        const val LOGIN_TYPE_NATIVE = 0   // 手机号 / 原生账号体系：带完整 VIP 权益
+        const val LOGIN_TYPE_QQ = 2       // QQ 互联 OAuth 扫码：第三方授权
+
+        /** 与登录类型配套的 tmeLoginMethod（取流 comm 需一并带上）。 */
+        fun loginMethodOf(loginType: Int): Int =
+            if (loginType == LOGIN_TYPE_NATIVE) 3 else 2
+
         fun hash33(s: String, h: Int = 0): Int {
             var result = h
             for (c in s) result = (result shl 5) + result + c.code

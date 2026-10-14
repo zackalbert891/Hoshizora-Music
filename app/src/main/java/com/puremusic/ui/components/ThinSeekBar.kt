@@ -35,14 +35,14 @@ import androidx.compose.ui.unit.sp
 import kotlin.math.roundToInt
 
 /**
- * 细线进度条：**一条 2.5dp 的横线 + 一个圆点**。
+ * 胶囊进度条：**一条 4dp 的胶囊轨道 + 一个圆点**。
  *
  * 为什么不用 Material 的 Slider：
  * - Slider 有自己的轨道（默认 4dp）与 20dp 触摸高度，和下方的缓冲条叠加后会看到**两条进度条**；
  * - Slider 的圆点固定、轨道偏粗，和沉浸式播放页的观感不搭。
  *
- * 这里把「已播放 / 缓冲 / 未播放」三种状态画在**同一条轨道**上（缓冲用更亮的同色系），
- * 视觉上永远只有一条线；拖动时圆点放大并在上方浮出时间气泡，松手才真正 seek。
+ * 这里把「已播放 / 缓冲 / 未播放」三种状态画在**同一条胶囊轨道**上（缓冲用更亮的同色系），
+ * 视觉上永远只有一条；拖动时圆点放大并在上方浮出时间气泡，松手才真正 seek。
  */
 @Composable
 fun ThinSeekBar(
@@ -53,8 +53,8 @@ fun ThinSeekBar(
     trackColor: Color = Color.White.copy(alpha = 0.16f),
     bufferedColor: Color = Color.White.copy(alpha = 0.30f),
     thumbColor: Color = activeColor,
-    trackHeight: Dp = 2.5.dp,
-    thumbRadius: Dp = 5.dp,
+    trackHeight: Dp = 4.dp,
+    thumbRadius: Dp = 6.dp,
     showThumb: Boolean = true,
     /** 拖动时的气泡文案（传入当前比例，返回展示文本）；为 null 则不显示气泡。 */
     bubbleText: ((Float) -> String)? = null,

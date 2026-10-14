@@ -171,16 +171,20 @@ fun SettingsScreen(
                             onClick = { dismiss(); vm.recheckQqLogin() },
                         )
                         DropdownMenuItem(
+                            text = { Text("检测会员权益") },
+                            onClick = { dismiss(); vm.probeQqVip() },
+                        )
+                        DropdownMenuItem(
                             text = { Text("退出登录") },
                             onClick = { dismiss(); vm.logout(MusicSourceType.QQ) },
                         )
                     } else {
                         DropdownMenuItem(
-                            text = { Text("手机号登录") },
+                            text = { Text("手机号登录（有会员权益）") },
                             onClick = { dismiss(); onPhoneLogin() },
                         )
                         DropdownMenuItem(
-                            text = { Text("扫码登录") },
+                            text = { Text("扫码登录（无会员权益）") },
                             onClick = { dismiss(); onLogin() },
                         )
                         DropdownMenuItem(
@@ -380,6 +384,29 @@ fun SettingsScreen(
         CookieDialog(
             onSave = { vm.saveCookie(it) },
             onDismiss = { showCookieDialog = false },
+        )
+    }
+
+    // 会员权益实测结果：逐组参数列出 purl / result，便于定位「有会员却播不了」的原因
+    val vipProbe by vm.vipProbe.collectAsStateWithLifecycle()
+    vipProbe?.let { text ->
+        AlertDialog(
+            onDismissRequest = vm::dismissVipProbe,
+            title = { Text("QQ 会员权益检测") },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    Text(
+                        "purl=true 即该组参数下能取到完整直链；result=101404 表示无权限。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(text, style = MaterialTheme.typography.bodySmall)
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = vm::dismissVipProbe) { Text("关闭") }
+            },
         )
     }
 

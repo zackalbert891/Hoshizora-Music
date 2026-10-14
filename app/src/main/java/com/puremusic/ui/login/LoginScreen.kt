@@ -20,6 +20,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -32,7 +33,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 
 @Composable
-fun LoginScreen(onBack: () -> Unit, onSuccess: () -> Unit) {
+fun LoginScreen(onBack: () -> Unit, onSuccess: () -> Unit, onPhoneLogin: () -> Unit = {}) {
     val vm: LoginViewModel = hiltViewModel()
 
     LaunchedEffect(vm.loggedIn) {
@@ -80,6 +81,18 @@ fun LoginScreen(onBack: () -> Unit, onSuccess: () -> Unit) {
             vm.error?.let {
                 Spacer(Modifier.height(8.dp))
                 Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            }
+
+            Spacer(Modifier.height(28.dp))
+            // 扫码走 QQ 互联第三方授权，拿不到绿钻/SVIP 权益；会员必须用手机号走原生账号体系。
+            Text(
+                "扫码是第三方授权登录，不带会员权益",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(8.dp))
+            TextButton(onClick = onPhoneLogin, modifier = Modifier.fillMaxWidth()) {
+                Text("用手机号登录（会员权益）")
             }
         }
     }

@@ -128,18 +128,21 @@ fun MiniPlayer(
                     }
                 }
             }
-            // 贴底细线：未播放时是一条极淡的底边（当作分隔线），播放时左侧亮起主色。
+            // 贴底胶囊：未播放时是一条极淡的底边（当作分隔线），播放时左侧亮起主色。
+            val progressShape = RoundedCornerShape(percent = 50)
             Box(
                 Modifier
                     .fillMaxWidth()
-                    .height(2.dp)
+                    .height(3.dp)
+                    .clip(progressShape)
                     .background(scheme.onSurface.copy(alpha = 0.10f)),
             ) {
                 if (progress >= 0f) {
                     Box(
                         Modifier
                             .fillMaxWidth(progress.coerceIn(0f, 1f))
-                            .height(2.dp)
+                            .height(3.dp)
+                            .clip(progressShape)
                             .background(scheme.primary),
                     )
                 }

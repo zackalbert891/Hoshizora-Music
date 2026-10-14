@@ -331,6 +331,7 @@ fun AppRoot() {
                     LoginScreen(
                         onBack = { navController.popBackStack() },
                         onSuccess = { navController.popBackStack() },
+                        onPhoneLogin = { navController.navigate(Destinations.PHONE_LOGIN) },
                     )
                 }
                 composable(Destinations.PHONE_LOGIN) {

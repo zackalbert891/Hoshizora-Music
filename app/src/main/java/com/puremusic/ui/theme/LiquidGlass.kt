@@ -665,7 +665,7 @@ private fun DrawScope.drawRefractedBackdrop(
 @Composable
 fun Modifier.glassCard(
     level: GlassLevel = GlassLevel.CARD,
-    shape: Shape = RoundedCornerShape(UiTokens.RadiusLarge),
+    shape: Shape = RoundedCornerShape(UiTokens.RadiusCard),
     accent: Color? = null,
     elevation: Dp = 0.dp,
 ): Modifier = glassSurface(level.spec(), shape, accent, elevation)

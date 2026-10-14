@@ -79,6 +79,17 @@ data class QqMidUrlInfo(
     val purl: String? = null,
     val opi30surl: String? = null,
     val wifiurl: String? = null,
+    /** 0 = 有权限；101404 = 无权限（未开会员 / 版权限制）。 */
+    val result: Int? = null,
+)
+
+/** VIP 权益实测结论：直接拿一首已知需权益的曲目试取流，比查会员状态接口更贴近「能不能播」。 */
+data class QqVipProbeResult(
+    val loggedIn: Boolean,
+    val uin: String,
+    val savedLoginType: Int?,
+    val cookieKeys: String,
+    val lines: List<String>,
 )
 
 /** 歌词响应。 */
@@ -177,10 +188,7 @@ class QqMusicSource @Inject constructor(
             ?: account?.userId?.takeIf { it.isNotBlank() } ?: "0"
         // ct/cv 必须是 11/11（PC 客户端标识）：实测 ct=24&cv=0 时后端虽返回 code=0，
         // 但 meta.sum 恒为 0、song.list 为空 —— 表现为「QQ 搜索永远 0 条」。
-        val comm = buildString {
-            append("\"uin\":\"$uin\",\"format\":\"json\",\"ct\":11,\"cv\":11,\"tmeLoginType\":2")
-            if (authst.isNotBlank()) append(",\"authst\":\"$authst\"")
-        }
+        val comm = commFields(uin, cookie, authst)
         // param 必须保持「裸参数」：实测额外带 grp / nqc_flag / remoteplace 会让 meta.sum 归零
         val json = """{"req_1":{"module":"music.search.SearchCgiService","method":"DoSearchForQQMusicDesktop","param":{"query":"$keyword","page_num":1,"num_per_page":$limit,"search_type":0}},"comm":{$comm}}"""
         val builder = Request.Builder()
@@ -342,10 +350,7 @@ class QqMusicSource @Inject constructor(
             .map { cookieField(cookie, it) }.firstOrNull { it.isNotBlank() }.orEmpty()
         for (filename in filenames) {
             // ct/cv 与搜索同理：11/11 才能被后端当作合法 PC 客户端，否则 purl 恒空（result=104003）
-            val commFields = buildString {
-                append("\"uin\":\"$uin\",\"format\":\"json\",\"ct\":11,\"cv\":11,\"tmeLoginType\":2")
-                if (authst.isNotBlank()) append(",\"authst\":\"$authst\"")
-            }
+            val commFields = commFields(uin, cookie, authst)
             val json = """{"req_1":{"module":"vkey.GetVkeyServer","method":"CgiGetVkey","param":{"filename":["$filename"],"guid":"$guid","songmid":["$songMid"],"songtype":[0],"uin":"$uin","loginflag":1,"platform":"20"}},"loginUin":"$uin","comm":{$commFields}}"""
             // guid 必须随 cookie 一起下发，否则服务端返回 104009 invalidq 拒绝取流
             val fullCookie = if (cookie.isNotBlank() && !cookie.contains("guid=")) {
@@ -388,6 +393,112 @@ class QqMusicSource @Inject constructor(
     /** guid 必须与 Cookie 里的 guid 一致，否则 VIP 会被服务端识别为异常。 */
     private fun guidOf(cookie: String): String =
         cookieField(cookie, "guid").takeIf { it.isNotBlank() } ?: SESSION_GUID
+
+    /**
+     * 构造 CGI 的 comm 段。
+     *
+     * **tmeLoginType / tmeLoginMethod 必须沿用登录时的账号体系**，不能写死：
+     * 手机号登录走原生账号（0），扫码登录走 QQ 互联 OAuth（2），二者是两套权益校验。
+     * 以前这里写死 2，于是「原生账号登录后明明有会员，取流却被判成第三方授权」，
+     * 表现为 vkey 恒 result=101404 —— 即所谓的「QQ 登录了但没有 VIP 权益」。
+     */
+    private fun commFields(uin: String, cookie: String, authst: String): String {
+        val loginType = cookieField(cookie, "tmeLoginType").toIntOrNull()
+            ?: QqLoginManager.LOGIN_TYPE_QQ
+        val method = QqLoginManager.loginMethodOf(loginType)
+        return buildString {
+            append("\"uin\":\"$uin\",\"format\":\"json\",\"ct\":11,\"cv\":11")
+            append(",\"tmeLoginType\":$loginType,\"tmeLoginMethod\":$method")
+            if (authst.isNotBlank()) append(",\"authst\":\"$authst\"")
+        }
+    }
+
+    /**
+     * VIP 权益实测：对多种「登录类型 x 请求方法」组合逐一取流，看哪一组能拿到完整直链。
+     *
+     * 不用会员状态 CGI —— 那类接口要登录、字段名还会漂移；直接拿一首已知需要权益的
+     * 曲目（周杰伦《晴天》，匿名实测 purl 为空、result=101404）试取流最贴近真实播放：
+     * purl 非空即代表权益在该组合下生效。
+     *
+     * 输出每行形如 `type=0 method=3 F000 -> purl=true result=0`，
+     * 用于定位「我的会员到底在哪一组参数下能生效」。
+     */
+    suspend fun probeVip(): QqVipProbeResult = withContext(Dispatchers.IO) {
+        accountStore.awaitLoaded()
+        val account = accountStore.accounts.value[type]
+        val cookie = account?.cookie.orEmpty()
+        if (cookie.isBlank()) {
+            return@withContext QqVipProbeResult(false, "", null, "", listOf("未登录 QQ 音乐"))
+        }
+        val uin = cookieField(cookie, "uin").takeIf { it.isNotBlank() }
+            ?: account?.userId?.takeIf { it.isNotBlank() } ?: "0"
+        val authst = listOf("qqmusic_key", "qm_keyst", "musickey")
+            .map { cookieField(cookie, it) }.firstOrNull { it.isNotBlank() }.orEmpty()
+        val savedType = cookieField(cookie, "tmeLoginType").toIntOrNull()
+        val keys = cookie.split(";").map { it.trim().substringBefore("=") }
+            .filter { it.isNotBlank() }.joinToString(",")
+        val guid = cookieField(cookie, "guid").takeIf { it.isNotBlank() } ?: SESSION_GUID
+
+        val lines = mutableListOf<String>()
+        lines += "uin=$uin  authst=${authst.isNotBlank()}  已存 tmeLoginType=${savedType ?: "无"}"
+        lines += "cookie 键: $keys"
+        // 先试账号自身记录的类型，再穷举另外两种，保证至少能找到一组可用参数
+        val types = listOfNotNull(savedType, QqLoginManager.LOGIN_TYPE_NATIVE, QqLoginManager.LOGIN_TYPE_QQ)
+            .distinct()
+        for (loginType in types) {
+            val methods = listOf(QqLoginManager.loginMethodOf(loginType), 3, 2).distinct()
+            for (method in methods) {
+                for (fn in listOf("F000$PROBE_MEDIA_MID.flac", "M800$PROBE_MEDIA_MID.mp3")) {
+                    val (purl, result) = rawVkey(
+                        PROBE_SONG_MID, cookie, uin, guid, fn, loginType, method, authst,
+                    )
+                    val tag = fn.substring(0, 4)
+                    lines += "type=$loginType method=$method $tag -> purl=${purl != null} result=$result"
+                    if (purl != null) lines += "  直链: ${purl.take(70)}…"
+                }
+            }
+        }
+        QqVipProbeResult(true, uin, savedType, keys, lines)
+    }
+
+    /**
+     * 发一次 vkey 请求并返回（完整播放直链，result 码）。
+     *
+     * 与 [requestVkeyUrl] 的区别：**不做 30 秒试听降级**，purl 为空就是没权益，
+     * 这样探针才能如实区分「能播完整版」和「只有试听」。
+     */
+    private suspend fun rawVkey(
+        songMid: String,
+        cookie: String,
+        uin: String,
+        guid: String,
+        filename: String,
+        loginType: Int,
+        loginMethod: Int,
+        authst: String,
+    ): Pair<String?, Int?> = withContext(Dispatchers.IO) {
+        val comm = buildString {
+            append("\"uin\":\"$uin\",\"format\":\"json\",\"ct\":11,\"cv\":11")
+            append(",\"tmeLoginType\":$loginType,\"tmeLoginMethod\":$loginMethod")
+            if (authst.isNotBlank()) append(",\"authst\":\"$authst\"")
+        }
+        val json = """{"req_1":{"module":"vkey.GetVkeyServer","method":"CgiGetVkey","param":{"filename":["$filename"],"guid":"$guid","songmid":["$songMid"],"songtype":[0],"uin":"$uin","loginflag":1,"platform":"20"}},"loginUin":"$uin","comm":{$comm}}"""
+        val fullCookie = if (cookie.isNotBlank() && !cookie.contains("guid=")) "$cookie; guid=$guid" else cookie
+        val builder = Request.Builder()
+            .url("https://u.y.qq.com/cgi-bin/musicu.fcg")
+            .post(json.toRequestBody("application/json; charset=utf-8".toMediaType()))
+            .header("Referer", "https://y.qq.com/")
+        if (fullCookie.isNotBlank()) builder.header("Cookie", fullCookie)
+        val text = runCatching { client.newCall(builder.build()).execute().body?.string() }
+            .getOrNull() ?: return@withContext null to null
+        val resp = runCatching { gson.fromJson(text, QqVkeyResponse::class.java) }.getOrNull()
+        val data = resp?.req_1?.data ?: return@withContext null to null
+        val info = data.midurlinfo?.firstOrNull() ?: return@withContext null to null
+        val sip = data.sip?.firstOrNull() ?: "http://aqqmusic.tc.qq.com/"
+        val purl = info.purl?.takeIf { it.isNotBlank() }
+            ?.let { (sip + it).replaceFirst("http://", "https://") }
+        purl to info.result
+    }
 
     /** 从 cookie 串中读取单个键值（与 QqLoginManager.cookieField 同义）。 */
     private fun cookieField(cookie: String, name: String): String =
@@ -499,10 +610,7 @@ class QqMusicSource @Inject constructor(
             .map { cookieField(cookie, it) }.firstOrNull { it.isNotBlank() }.orEmpty()
         val uin = cookieField(cookie, "uin").takeIf { it.isNotBlank() }
             ?: account.userId.takeIf { it.isNotBlank() } ?: "0"
-        val comm = buildString {
-            append("\"uin\":\"$uin\",\"format\":\"json\",\"ct\":11,\"cv\":11,\"tmeLoginType\":2")
-            if (authst.isNotBlank()) append(",\"authst\":\"$authst\"")
-        }
+        val comm = commFields(uin, cookie, authst)
         val json = """{"req_0":{"module":"music.musicasset.PlaylistBaseRead","method":"GetPlaylistByUin","param":{"uin":"$uin","sin":0,"ein":100,"inCharset":"utf-8","outCharset":"utf-8"}},"comm":{$comm}}"""
         val resp = cgiPost(json, cookie)
         val parsed = parsePlaylists(resp)
@@ -664,6 +772,13 @@ class QqMusicSource @Inject constructor(
     private companion object {
         /** 歌单详情返回的 media_mid（取流第二候选），见 QqSongDetail.toSong。 */
         const val MEDIA_MID_KEY = "mediaMid"
+
+        /**
+         * 权益探针用的样本曲目：周杰伦《晴天》。
+         * 匿名取流实测 purl 为空、result=101404（无权限），故能作为「有无 VIP」的判据。
+         */
+        const val PROBE_SONG_MID = "0039MnYb0qxYhV"
+        const val PROBE_MEDIA_MID = "003Qui1q2u1Zho"
 
         /** 本次进程稳定的 guid（QQ vkey 需要，避免每次随机触发 104009 invalidq）。 */
         val SESSION_GUID = (1000000000L..9999999999L).random().toString()

@@ -37,11 +37,37 @@ class SettingsViewModel @Inject constructor(
     private val settingsStore: SettingsStore,
     private val accountStore: AccountStore,
     private val qqLogin: QqLoginManager,
+    private val qqSource: com.puremusic.source.qq.QqMusicSource,
 ) : ViewModel() {
 
     private val _qqLoginStatus = MutableStateFlow(QqLoginStatus())
     /** QQ 音乐登录态（进入设置页自动检查一次；过期时尝试自动续期）。 */
     val qqLoginStatus: StateFlow<QqLoginStatus> = _qqLoginStatus.asStateFlow()
+
+    private val _vipProbe = MutableStateFlow<String?>(null)
+    /**
+     * QQ 会员权益实测结果（null = 未检测）。
+     *
+     * 直接拿一首需权益的曲目试取流，逐组参数输出 purl / result，
+     * 用来回答「我明明有会员，为什么 VIP 歌还是播不了」。
+     */
+    val vipProbe: StateFlow<String?> = _vipProbe.asStateFlow()
+
+    /** 实测当前 QQ 账号的会员权益是否生效（需登录）。 */
+    fun probeQqVip() {
+        viewModelScope.launch {
+            _vipProbe.value = "正在检测会员权益…"
+            val result = runCatching { qqSource.probeVip() }.getOrElse { e ->
+                _vipProbe.value = "检测失败：${e.message}"
+                return@launch
+            }
+            _vipProbe.value = result.lines.joinToString("\n")
+        }
+    }
+
+    fun dismissVipProbe() {
+        _vipProbe.value = null
+    }
 
     init {
         viewModelScope.launch {
