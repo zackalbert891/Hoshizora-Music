@@ -180,11 +180,11 @@ fun SettingsScreen(
                         )
                     } else {
                         DropdownMenuItem(
-                            text = { Text("手机号登录（有会员权益）") },
+                            text = { Text("手机号登录") },
                             onClick = { dismiss(); onPhoneLogin() },
                         )
                         DropdownMenuItem(
-                            text = { Text("扫码登录（无会员权益）") },
+                            text = { Text("扫码登录") },
                             onClick = { dismiss(); onLogin() },
                         )
                         DropdownMenuItem(

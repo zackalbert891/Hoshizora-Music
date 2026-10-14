@@ -422,9 +422,8 @@ class QqMusicSource @Inject constructor(
      * 构造 CGI 的 comm 段。
      *
      * **tmeLoginType / tmeLoginMethod 必须沿用登录时的账号体系**，不能写死：
-     * 手机号登录走原生账号（0），扫码登录走 QQ 互联 OAuth（2），二者是两套权益校验。
-     * 以前这里写死 2，于是「原生账号登录后明明有会员，取流却被判成第三方授权」，
-     * 表现为 vkey 恒 result=101404 —— 即所谓的「QQ 登录了但没有 VIP 权益」。
+     * 手机号登录走原生账号（0），扫码登录走 QQ 互联 OAuth（2）。
+     * 注意两套体系都能正常使用会员权益，差别不在权益上。
      *
      * **ct/cv 按接口区分，绝不能互相照搬**（真机实测，2026-10-14）：
      * - 搜索 / 歌单等 `music.*` 接口：必须 11/11，否则 meta.sum 恒 0、结果为空；
@@ -585,8 +584,8 @@ class QqMusicSource @Inject constructor(
             if (!hasGuid) lines += "· 该账号 cookie 缺 guid，重新登录后会补上并固定。"
             val oauth = cookie.contains("pt_oauth_token") || cookie.contains("pt_login_type")
             if (oauth) {
-                lines += "· 当前是扫码（QQ 互联第三方授权）登录 —— 这类凭证服务端不发放会员权益，"
-                lines += "  换参数也无效。请退出登录，改用「手机号登录」重新登录后再检测。"
+                lines += "· 当前是扫码（QQ 互联 OAuth）登录，账号体系 type=2；"
+                lines += "  实测该体系同样可取得会员权益，无需更换登录方式。"
             } else {
                 lines += "· 凭证可能已过期或账号本身无该曲目的会员权益。"
             }

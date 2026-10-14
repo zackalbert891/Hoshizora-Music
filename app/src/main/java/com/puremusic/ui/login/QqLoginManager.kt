@@ -192,8 +192,7 @@ class QqLoginManager @Inject constructor(
     suspend fun phoneLogin(phone: String, code: String): QqLoginResult = withContext(Dispatchers.IO) {
         val json = """{"req_0":{"module":"music.login.LoginServer","method":"Login","param":{"code":"$code","loginMode":1,"phoneNo":"$phone"}},"comm":{"tmeLoginMethod":3,"tmeLoginType":0,"format":"json","ct":23,"cv":0}}"""
         val resp = cgiPost(json, "") ?: return@withContext QqLoginResult("ERROR", message = "网络异常，请重试")
-        // 原生账号体系：登录类型 0。取流必须沿用同一个 tmeLoginType，
-        // 否则服务端按「QQ 互联第三方授权」处理，绿钻/SVIP 权益不生效（vkey 恒 101404）。
+        // 原生账号体系：登录类型 0。取流的 comm.tmeLoginType 要与登录时保持一致。
         parseCredential(resp, loginType = LOGIN_TYPE_NATIVE)
     }
 
@@ -240,8 +239,7 @@ class QqLoginManager @Inject constructor(
             "access_token=${d.access_token.orEmpty()}",
             "unionid=${d.unionid.orEmpty()}",
             "encryptUin=${d.encryptUin.orEmpty()}",
-            // 登录类型必须持久化：取流（CgiGetVkey）的 comm.tmeLoginType 要与登录时一致，
-            // 否则原生账号（0）登录的绿钻/SVIP 权益会被服务端判为第三方授权（2）而失效。
+            // 登录类型必须持久化：取流（CgiGetVkey）的 comm.tmeLoginType 要与登录时一致。
             "tmeLoginType=$loginType",
             "loginType=$loginType",
             "loginMethod=${loginMethodOf(loginType)}",
@@ -284,8 +282,7 @@ class QqLoginManager @Inject constructor(
                 "ERROR", message = "缺少 refresh_key，无法自动续期，请重新登录",
             )
         }
-        // 续期必须沿用原账号的登录体系：写死 2 会把原生账号（0）降级成第三方授权，
-        // 续期后虽然登录成功，但绿钻/SVIP 权益已被服务端判失。
+        // 续期必须沿用原账号的登录体系，否则类型被改写，取流时与登录态对不上。
         val savedType = cookieField(cookie, "tmeLoginType").toIntOrNull() ?: LOGIN_TYPE_QQ
         val param = JsonObject().apply {
             addProperty("openid", cookieField(cookie, "openid"))
@@ -318,7 +315,7 @@ class QqLoginManager @Inject constructor(
         // 直接决定取流能不能带上正确的鉴权票据 —— 少了哪个都表现为「有会员却 101404」。
         android.util.Log.e("QqVipProbe", "续期完整响应(type=$savedType): $text")
         // 续期响应含敏感凭证，仅解析状态，不打印原文。
-        // 登录类型沿用原账号的，否则取流会把原生账号的 VIP 权益判成第三方授权。
+        // 登录类型沿用原账号的，保证续期前后账号体系一致。
         val result = parseCredential(
             text,
             failPrefix = "凭证续期失败",
@@ -438,11 +435,12 @@ class QqLoginManager @Inject constructor(
         /**
          * 账号体系类型。写进 cookie 供 QqMusicSource 取流时沿用。
          *
-         * 这两个值决定了服务端按哪种登录态校验权益：
-         * 用 0（原生）登录却按 2（第三方授权）取流，绿钻/SVIP 一律不生效。
+         * 两套账号体系，取流时 comm.tmeLoginType 必须与登录时一致。
+         * 注意：二者**都能正常使用会员权益**（实测 type=2 扫码登录同样取到
+         * FLAC 无损），此前「扫码不带权益」的判断是被 ct/cv 参数误导的误判。
          */
-        const val LOGIN_TYPE_NATIVE = 0   // 手机号 / 原生账号体系：带完整 VIP 权益
-        const val LOGIN_TYPE_QQ = 2       // QQ 互联 OAuth 扫码：第三方授权
+        const val LOGIN_TYPE_NATIVE = 0   // 手机号 / 原生账号体系
+        const val LOGIN_TYPE_QQ = 2       // QQ 互联 OAuth 扫码
 
         /** 与登录类型配套的 tmeLoginMethod（取流 comm 需一并带上）。 */
         fun loginMethodOf(loginType: Int): Int =

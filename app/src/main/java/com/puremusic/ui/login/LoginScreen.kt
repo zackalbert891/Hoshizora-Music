@@ -84,15 +84,16 @@ fun LoginScreen(onBack: () -> Unit, onSuccess: () -> Unit, onPhoneLogin: () -> U
             }
 
             Spacer(Modifier.height(28.dp))
-            // 扫码走 QQ 互联第三方授权，拿不到绿钻/SVIP 权益；会员必须用手机号走原生账号体系。
+            // 两种登录方式都能正常使用会员权益（实测扫码也可取到 FLAC 无损），
+            // 差别只在账号体系：扫码走 QQ 互联 OAuth(2)，手机号走原生账号(0)。
             Text(
-                "扫码是第三方授权登录，不带会员权益",
+                "扫码与手机号均可使用会员权益",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Spacer(Modifier.height(8.dp))
             TextButton(onClick = onPhoneLogin, modifier = Modifier.fillMaxWidth()) {
-                Text("用手机号登录（会员权益）")
+                Text("用手机号登录")
             }
         }
     }
