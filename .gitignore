@@ -48,3 +48,7 @@ server-start.vbs
 # OS
 .DS_Store
 Thumbs.db
+
+# 本地诊断临时文件（截图 / uiautomator dump / 抓取的开源参考源码）
+.tmpdiag/
+.hostfix/

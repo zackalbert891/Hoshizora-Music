@@ -95,6 +95,10 @@ class DiagActivity : ComponentActivity() {
                 // QQ 发现层端点探针（排行榜/广场/歌手/专辑/每日推荐各候选端点横比）：
                 // adb shell am start -n com.puremusic/.DiagActivity -e only qqdiscover
                 "qqdiscover" -> runQqDiscoverProbe()
+                // QQ 评论写接口探针（g_tk 种子校准 + 可选真实发/删/赞）：
+                //   adb shell am start -n com.puremusic/.DiagActivity -e only qqwrite
+                //   adb shell am start -n com.puremusic/.DiagActivity -e only qqwrite -e do 1
+                "qqwrite" -> runQqWriteProbe()
                 else -> runDiag()
             }
             tv.text = out.toString()
@@ -163,7 +167,108 @@ class DiagActivity : ComponentActivity() {
         tvUpdate()
     }
 
-/**
+    /**
+     * QQ 评论**写接口**探针（2026-10-15）。
+     *
+     * 结论先行（写进注释免得以后重走）：
+     * - 老 H5 `fcg_global_comment_h5.fcg` 的写命令（`cmd=1|3`）**对本 App 无解** ——
+     *   它要的 g_tk 来自 web 侧 `skey`/`qqmusic_key`，而 QQ 互联 OAuth 扫码登录拿不到，
+     *   实测 cookie 里所有密钥 + 通用常量一律 `code:1000 login check failed`。
+     * - 能用的路是 musicu `music.globalComment.CommentWriteServer`（`AddComment`/`DelComment`），
+     *   鉴权靠 `comm.authst=musickey`，不需要 g_tk。
+     * - 点赞只有老 H5 `fcg_global_comment_praise_h5.fcg` 一条路，所以这里逐个 g_tk 候选试一遍。
+     *
+     * 探针会真发一条自检评论并**立刻删掉**，不留垃圾。
+     *
+     * 用法：`adb shell am start -n com.puremusic/.DiagActivity -e only qqwrite [-e mid <songmid>]`
+     */
+    private suspend fun runQqWriteProbe() = withContext(Dispatchers.IO) {
+        line("════════ QQ 评论写接口探针 ════════")
+        accounts.awaitLoaded()
+        val acc = accounts.accounts.value[MusicSourceType.QQ]
+        if (acc == null) {
+            line("❌ 未登录 QQ 音乐 —— 写接口必然失败，先去扫码登录")
+            return@withContext
+        }
+        val cookie = acc.cookie.orEmpty()
+        val fields = cookie.split(";").map { it.trim().substringBefore("=") }.filter { it.isNotBlank() }
+        line("cookie ${fields.size} 字段: ${fields.joinToString(",")}")
+
+        val mid = intent.getStringExtra("mid").orEmpty().ifBlank { "0039MnYb0qxYhV" }
+        val sid = runCatching { qqComment.resolveSongId(mid) }.getOrNull().orEmpty()
+        line("songmid=$mid → songId=$sid")
+        if (sid.isBlank()) {
+            line("songId 解析失败，无法继续")
+            return@withContext
+        }
+
+        // ── 一、读通道：现代 musicu 有没有数据（顺带对比两套 id）──
+        line("")
+        line("── 读通道 ──")
+        val modern = runCatching { qqComment.page(mid, 0, 25) }.getOrNull()
+        line("page: n=${modern?.comments?.size} hot=${modern?.hot?.size} total=${modern?.total} more=${modern?.more}")
+        modern?.comments?.take(3)?.forEach {
+            line("   ▸ id=${it.id} | ${it.userName} | ${it.content.take(30)} | 赞${it.likeCount} 我发的=${it.isSelf} 已赞=${it.liked}")
+        }
+        modern?.hot?.take(2)?.forEach {
+            line("   ★ id=${it.id} | ${it.userName} | ${it.content.take(30)}")
+        }
+        val target = modern?.comments?.firstOrNull()
+
+        // ── 二、发表 → 回读 → 删除（真实链路，跑完自动清理）──
+        line("")
+        line("── 发表 / 删除 ──")
+        val text = "Hoshizora 自检评论 ${System.currentTimeMillis() % 100000}"
+        var postedId = ""
+        when (val r = runCatching { qqComment.postComment(mid, text) }.getOrNull()) {
+            null -> line("❌ postComment 抛异常")
+            is com.puremusic.source.netease.PostResult.Failure -> line("❌ 发表失败：${r.reason}")
+            is com.puremusic.source.netease.PostResult.Success -> {
+                postedId = r.commentId
+                line("✅ 发表成功 AddedCmId=${r.commentId}")
+                line("   回读对象=${r.comment?.let { "id=${it.id} nick=${it.userName} 我发的=${it.isSelf} :: ${it.content}" } ?: "无"}")
+            }
+        }
+        kotlinx.coroutines.delay(1000)
+        val after = runCatching { qqComment.page(mid, 0, 25) }.getOrNull()
+        val mine = after?.comments?.firstOrNull { it.content.contains("Hoshizora 自检评论") }
+        if (mine == null) {
+            line("⚠️ 最新列表里没找到刚发的那条（id=$postedId）")
+        } else {
+            line("✅ 列表里找到了：id=${mine.id} 我发的=${mine.isSelf}（isSelf 为 true 才有删除按钮）")
+        }
+        val delId = mine?.id ?: postedId
+        if (delId.isNotBlank()) {
+            val okDel = runCatching { qqComment.deleteComment(mid, delId) }.getOrDefault(false)
+            line("${if (okDel) "✅ 已删除自检评论" else "⚠️ 删除失败，请手动删掉：$text"}")
+        }
+
+        // ── 三、点赞：直接走产品路径（内部自动挑 g_tk × Cookie 组合），点完立刻取消抵消 ──
+        line("")
+        line("── 点赞（走产品路径 qqComment.setLike）──")
+        if (target == null) {
+            line("评论区没有可点的评论，跳过")
+        } else {
+            line("目标评论 id=${target.id} 原赞=${target.likeCount} 原已赞=${target.liked}")
+            val on = runCatching { qqComment.setLike(target.id, true) }.getOrDefault(false)
+            line("setLike(true) → $on")
+            kotlinx.coroutines.delay(1200)
+            val after = runCatching { qqComment.page(mid, 0, 25) }.getOrNull()
+                ?.comments?.firstOrNull { it.id == target.id }
+            if (after != null) {
+                line("回读：赞=${after.likeCount} 已赞=${after.liked}（比原值多 1 才算真点上）")
+            } else {
+                line("回读：列表里没这条了")
+            }
+            kotlinx.coroutines.delay(600)
+            val off = runCatching { qqComment.setLike(target.id, false) }.getOrDefault(false)
+            line("setLike(false) → $off（取消抵消）")
+        }
+        line("════════ 探针结束 ════════")
+        tvUpdate()
+    }
+
+    /**
      * 网易云「我的音乐资产」五接口探针。
  *
  * 一次跑完红心 / 听歌排行 / 最近播放 / 每日推荐 / 私人FM，各自打印数量与样本，

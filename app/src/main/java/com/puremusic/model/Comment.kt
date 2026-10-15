@@ -41,4 +41,12 @@ data class Comment(
     val vipType: Int = 0,
     /** 评论者 userId：用来判断是不是"我自己发的"（决定要不要给删除按钮）。 */
     val userId: Long = 0L,
+    /**
+     * 服务端直接标明的「这是我自己的评论」。
+     *
+     * QQ 的评论者标识是**加密串**（`EncryptUin`），与登录 cookie 里的 uin 天然对不上，
+     * 没法像网易云那样靠数字 uid 比对；但 QQ 的现代评论接口会直接下发 `IsSelf`，
+     * 用它最可靠。网易云那套仍走 uid 比对（这里恒为 false）。
+     */
+    val isSelf: Boolean = false,
 )

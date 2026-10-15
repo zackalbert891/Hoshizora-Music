@@ -75,8 +75,58 @@ class QqDiscover @Inject constructor(
     //  歌单广场（分类 + 分页）
     // ═══════════════════════════════════════════════════════════════
 
-    /** 歌单分类（内置稳定大类；diss_by_tag 的分类列表端点真机返回空，故内置）。 */
-    fun categories(): List<QqCategory> = BUILTIN_CATEGORIES
+    /**
+     * 歌单分类（语种 / 流派 / 主题 / 心情 / 场景，拍平成一条列表）。
+     *
+     * 首选官方分类配置端点 `fcg_get_diss_tag_conf.fcg`（2026-10-15 实测可用，
+     * 与广场 `fcg_get_diss_by_tag` 同族），成功一次后进程内缓存；失败回落内置常量。
+     *
+     * ⚠️ 历史坑：此前内置的 10000001~10000010 是**猜的 id**，服务端对不存在的分类
+     * 返回空列表 —— 表现为「点任何分类永远是空白」。现在内置表已换成官方实测 id
+     * （165 国语 / 6 流行 / 11 摇滚 …），即便在线拉取失败也能正常用。
+     */
+    suspend fun categories(): List<QqCategory> {
+        categoriesCache?.let { return it }
+        val fetched = runCatching { fetchCategories() }.getOrDefault(emptyList())
+        if (fetched.isNotEmpty()) {
+            categoriesCache = fetched
+            Log.e(TAG, "categories 在线拉取成功 n=${fetched.size}")
+            return fetched
+        }
+        Log.e(TAG, "categories 在线拉取为空，回落内置 n=${BUILTIN_CATEGORIES.size}")
+        return BUILTIN_CATEGORIES
+    }
+
+    /** 在线拉取成功后的分类缓存（进程内）；拉取失败不缓存，下次调用会重试。 */
+    @Volatile
+    private var categoriesCache: List<QqCategory>? = null
+
+    /**
+     * 官方分类配置：`data.categories[].items[]`（按 热门/语种/流派/主题/心情/场景 分组）。
+     * 这里拍平所有分组；「全部」由 UI 的 [com.puremusic.ui.discover] 自带胶囊提供，跳过。
+     */
+    private suspend fun fetchCategories(): List<QqCategory> = withContext(Dispatchers.IO) {
+        val url = "https://c.y.qq.com/splcloud/fcgi-bin/fcg_get_diss_tag_conf.fcg" +
+            "?g_tk=5381&loginUin=0&hostUin=0&format=json&inCharset=utf8" +
+            "&outCharset=utf-8&notice=0&platform=yqq.json&needNewCode=0"
+        val text = get(url) ?: return@withContext emptyList()
+        val root = runCatching { gson.fromJson(text, JsonObject::class.java) }.getOrNull()
+            ?: return@withContext emptyList()
+        val groups = root.obj("data")?.getAsJsonArray("categories") ?: return@withContext emptyList()
+        val out = LinkedHashMap<String, QqCategory>()
+        for (gel in groups) {
+            val items = (gel as? JsonObject)?.getAsJsonArray("items") ?: continue
+            for (iel in items) {
+                val o = iel as? JsonObject ?: continue
+                val idNum = o.intOf("categoryId")
+                if (idNum <= 0 || idNum == 10000000) continue
+                val name = unescapeHtml(o.stringOf("categoryName").orEmpty()).trim()
+                if (name.isBlank()) continue
+                out.putIfAbsent(name, QqCategory(idNum.toString(), name))
+            }
+        }
+        out.values.toList()
+    }
 
     /**
      * 歌单广场一页：按分类 id 翻页。
@@ -308,23 +358,45 @@ class QqDiscover @Inject constructor(
         )
 
         /**
-         * 内置歌单大类（categoryId 对应 QQ 歌单广场的顶层分类）。
+         * 内置歌单分类（categoryId 全部为 2026-10-15 curl 实测的真实分类 id）。
          *
-         * ⚠️ 不要在这里放「全部」：UI 的 [CategoryChips] 会自己补一个「全部」胶囊，
+         * 来源：官方分类配置端点 `fcg_get_diss_tag_conf.fcg` 的返回，按
+         * 语种 / 流派 / 主题 / 心情 / 场景 顺序拍平（「全部」10000000 跳过，UI 自带）。
+         *
+         * ⚠️ 不要凭空编造 categoryId：服务端对不存在的分类 id 返回空列表，
+         * 表现是「点分类永远空白」（10000001 这种序号在服务端并不存在）。
+         * ⚠️ 也不要在这里放「全部」：UI 的 CategoryChips 会自己补一个「全部」胶囊，
          * 重复会在 LazyRow 里撞 key（`cat-全部`）直接崩页。
-         * 「全部」在 UI 侧选中时映射为空串，[squarePlaylists] 收到空串会回落到 10000000。
          */
         val BUILTIN_CATEGORIES = listOf(
-            QqCategory("10000001", "华语"),
-            QqCategory("10000002", "欧美"),
-            QqCategory("10000003", "韩语"),
-            QqCategory("10000004", "日语"),
-            QqCategory("10000005", "粤语"),
-            QqCategory("10000006", "流行"),
-            QqCategory("10000007", "摇滚"),
-            QqCategory("10000008", "民谣"),
-            QqCategory("10000009", "电子"),
-            QqCategory("10000010", "说唱"),
+            // 语种
+            QqCategory("165", "国语"), QqCategory("167", "英语"), QqCategory("168", "韩语"),
+            QqCategory("166", "粤语"), QqCategory("169", "日语"), QqCategory("170", "小语种"),
+            QqCategory("203", "闽南语"), QqCategory("204", "法语"), QqCategory("205", "拉丁语"),
+            // 流派
+            QqCategory("6", "流行"), QqCategory("15", "轻音乐"), QqCategory("11", "摇滚"),
+            QqCategory("28", "民谣"), QqCategory("8", "R&B"), QqCategory("153", "嘻哈"),
+            QqCategory("24", "电子"), QqCategory("27", "古典"), QqCategory("18", "乡村"),
+            QqCategory("22", "蓝调"), QqCategory("21", "爵士"), QqCategory("164", "新世纪"),
+            QqCategory("25", "拉丁"), QqCategory("218", "后摇"), QqCategory("219", "中国传统"),
+            QqCategory("220", "世界音乐"),
+            // 主题
+            QqCategory("39", "ACG"), QqCategory("136", "经典"), QqCategory("146", "网络歌曲"),
+            QqCategory("133", "影视"), QqCategory("141", "KTV热歌"), QqCategory("131", "儿歌"),
+            QqCategory("145", "中国风"), QqCategory("194", "古风"), QqCategory("148", "情歌"),
+            QqCategory("196", "城市"), QqCategory("197", "现场音乐"), QqCategory("199", "背景音乐"),
+            QqCategory("200", "佛教音乐"), QqCategory("201", "UP主"), QqCategory("202", "乐器"),
+            QqCategory("226", "MC喊麦"), QqCategory("14", "DJ"),
+            // 心情
+            QqCategory("52", "伤感"), QqCategory("122", "安静"), QqCategory("117", "快乐"),
+            QqCategory("116", "治愈"), QqCategory("125", "励志"), QqCategory("59", "甜蜜"),
+            QqCategory("55", "寂寞"), QqCategory("126", "宣泄"), QqCategory("68", "思念"),
+            // 场景
+            QqCategory("78", "睡前"), QqCategory("102", "夜店"), QqCategory("101", "学习"),
+            QqCategory("99", "运动"), QqCategory("85", "开车"), QqCategory("76", "约会"),
+            QqCategory("94", "工作"), QqCategory("81", "旅行"), QqCategory("103", "派对"),
+            QqCategory("222", "婚礼"), QqCategory("223", "咖啡馆"), QqCategory("224", "跳舞"),
+            QqCategory("16", "校园"),
         )
     }
 }
@@ -399,4 +471,21 @@ private fun JsonObject.intOf(vararg keys: String): Int {
         }
     }
     return 0
+}
+
+/**
+ * 反转义官方配置里出现的 HTML 实体（`R&#38;B` → `R&B`、`&amp;` → `&` 等）。
+ * 只处理这几个常见实体，够用且不引依赖。
+ */
+private fun unescapeHtml(s: String): String {
+    if (!s.contains('&')) return s
+    return s
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&#39;", "'")
+        .replace("&#38;", "&")
+        .replace("&#x27;", "'")
 }

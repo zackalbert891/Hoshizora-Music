@@ -92,13 +92,18 @@ private val UNICODE_EMOJI: List<String> = listOf(
  * 结构（与网易云 App 一致）：输入框 + 表情按钮 + 发送按钮，
  * 回复态时在输入框上方多一条「回复 @某某 ×」。
  *
- * @param canPost 未登录 / 非网易云通道时禁用并显示引导文案 —— 不能给一个按了没用的输入框。
- * @param onLogin 未登录时点输入框直接跳登录页。
+ * @param canPost 未登录时禁用并显示引导文案 —— 不能给一个按了没用的输入框。
+ * @param platform 当前评论来自哪个平台（"QQ音乐" / "网易云"）：未登录提示要指名道姓，
+ *   QQ 的歌提示"登录网易云账号"会把人指到错误的登录页去。
+ * @param maxLength 输入上限，**按平台**给（网易云 1000 / QQ 音乐 300）。
+ * @param onLogin 未登录时点输入框直接跳**对应平台**的登录页。
  */
 @Composable
 fun CommentComposer(
     canPost: Boolean,
     sending: Boolean,
+    platform: String,
+    maxLength: Int = MAX_COMMENT_LEN,
     replyTo: ReplyTarget?,
     onReplyCancel: () -> Unit,
     onSend: (String) -> Unit,
@@ -108,6 +113,7 @@ fun CommentComposer(
     var emojiOpen by remember { mutableStateOf(false) }
     val shape = RoundedCornerShape(22.dp)
     val enabled = canPost && !sending
+    val limit = maxLength
     val sendScale by animateFloatAsState(
         targetValue = if (text.isNotBlank() && enabled) 1f else 0.88f,
         animationSpec = spring(dampingRatio = 0.5f, stiffness = 800f),
@@ -188,7 +194,8 @@ fun CommentComposer(
             ) {
                 if (text.isEmpty()) {
                     Text(
-                        if (enabled) "说点什么吧…" else "登录网易云账号即可发评论",
+                        if (enabled) "说点什么吧…"
+                        else "登录${platform.ifBlank { "网易云" }}账号即可发评论",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
                         maxLines = 1,
@@ -201,7 +208,7 @@ fun CommentComposer(
                     value = text,
                     onValueChange = {
                         // 网易云服务端正文上限 1000 字，这里先卡住，避免白发一次请求
-                        if (it.length <= MAX_COMMENT_LEN) text = it
+                        if (it.length <= limit) text = it
                     },
                     enabled = enabled,
                     textStyle = TextStyle(
@@ -280,11 +287,11 @@ fun CommentComposer(
         }
 
         // 剩余字数：只在快到上限时才提示，平时不占地方
-        if (text.length > MAX_COMMENT_LEN - 100) {
+        if (text.length > limit - 100) {
             Text(
-                "${text.length}/${MAX_COMMENT_LEN}",
+                "${text.length}/$limit",
                 style = MaterialTheme.typography.labelSmall,
-                color = if (text.length > MAX_COMMENT_LEN) {
+                color = if (text.length > limit) {
                     MaterialTheme.colorScheme.error
                 } else {
                     MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
@@ -301,7 +308,7 @@ fun CommentComposer(
         ) {
             EmojiPanel(
                 onPick = { face ->
-                    if (text.length + face.length <= MAX_COMMENT_LEN) text += face
+                    if (text.length + face.length <= limit) text += face
                 },
             )
         }

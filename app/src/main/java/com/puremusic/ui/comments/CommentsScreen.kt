@@ -78,13 +78,22 @@ import com.puremusic.ui.theme.pressable
 @Composable
 fun CommentsScreen(
     onBack: () -> Unit,
-    onLogin: () -> Unit = {},
+    /**
+     * 点登录引导：带上该去哪个登录页（`qq` / `netease`）。
+     *
+     * 必须由**当前实际走通的评论通道**决定，不能按歌曲来源写死 ——
+     * QQ 的歌在评论拿不到时会回落到网易云映射，那时引导去"登录 QQ 音乐"就是错的。
+     */
+    onLogin: (String) -> Unit = {},
     viewModel: CommentsViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val listState = rememberLazyListState()
     val context = LocalContext.current
-    val myUid = viewModel.myUserId
+
+    /** 登录引导的去向；提示要能带上平台（QQ 与网易云的账号是两套，说不清就不知道怎么登）。 */
+    val loginTarget = state.loginTarget.ifBlank { LOGIN_TARGET_NETEASE }
+    val onNeedLogin: () -> Unit = { onLogin(loginTarget) }
 
     // 点赞 / 发表评论结果提示：弹一次即清，避免每次重组都弹
     LaunchedEffect(state.hint) {
@@ -173,6 +182,8 @@ fun CommentsScreen(
             CommentComposer(
                 canPost = state.canPost,
                 sending = state.sending,
+                platform = state.platform,
+                maxLength = state.maxLength,
                 replyTo = state.replyTo,
                 onReplyCancel = viewModel::cancelReply,
                 onSend = { text ->
@@ -181,7 +192,7 @@ fun CommentsScreen(
                         tab = 1
                     }
                 },
-                onLogin = onLogin,
+                onLogin = onNeedLogin,
             )
         },
     ) { padding ->
@@ -222,10 +233,10 @@ fun CommentsScreen(
                         selected = tab,
                         onSelect = { tab = it },
                     )
-                    // 网易云评论区未登录：点赞只能本地假装，刷新就没了 ——
-                    // 与其做个假按钮，不如明说，并给一条直达登录的入口。
-                    if (!state.canLike && state.platform == "网易云") {
-                        LoginBanner(onClick = onLogin)
+                    // 未登录：点赞只能本地假装，刷新就没了 ——
+                    // 与其做个假按钮，不如明说，并给一条直达**对应平台**登录的入口。
+                    if (!state.canLike) {
+                        LoginBanner(platform = state.platform, onClick = onNeedLogin)
                     }
                     LazyColumn(
                         state = listState,
@@ -244,7 +255,7 @@ fun CommentsScreen(
                                 ) { c ->
                                     CommentCard(
                                         comment = c,
-                                        isMine = myUid > 0L && c.userId == myUid,
+                                        isMine = viewModel.isMine(c),
                                         replyToId = state.replyTo?.commentId,
                                         canReply = state.canPost,
                                         onLike = { viewModel.toggleLike(c) },
@@ -276,7 +287,7 @@ fun CommentsScreen(
                             ) { c ->
                                 CommentCard(
                                     comment = c,
-                                    isMine = myUid > 0L && c.userId == myUid,
+                                    isMine = viewModel.isMine(c),
                                     replyToId = state.replyTo?.commentId,
                                     canReply = state.canPost,
                                     onLike = { viewModel.toggleLike(c) },
@@ -372,7 +383,7 @@ private fun EmptyCommentHint(text: String) {
  * 只占一行高度，条数多也不影响列表；点它去登录页，回来这条自己消失（登录态是 Flow）。
  */
 @Composable
-private fun LoginBanner(onClick: () -> Unit) {
+private fun LoginBanner(platform: String, onClick: () -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -391,7 +402,7 @@ private fun LoginBanner(onClick: () -> Unit) {
         )
         Spacer(Modifier.width(6.dp))
         Text(
-            "登录网易云后，点赞和发评论都会同步到你的账号",
+            "登录${platform.ifBlank { "网易云" }}后，点赞和发评论都会同步到你的账号",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.weight(1f),

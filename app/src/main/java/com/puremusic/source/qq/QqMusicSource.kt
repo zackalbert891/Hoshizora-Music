@@ -458,7 +458,14 @@ class QqMusicSource @Inject constructor(
      * - 取流 `vkey.GetVkeyServer`：必须 **24/0**。用 11/11 会一律 result=101404，
      *   **连免费歌都取不到**，极易被误判成"账号没有会员权益"。
      */
-    private fun commFields(
+    /**
+     * musicu 请求的 `comm` 公共参数段（JSON 片段，调用方自己拼进请求体）。
+     *
+     * **不是 private**：QQ 评论的写接口（`QqComment` 走 `music.globalComment.*`）同样
+     * 需要这一套 `uin / authst / tmeLoginType / tmeLoginMethod`，复用同一份构造可以保证
+     * 「登录体系标识」在全 App 一致 —— 这几个字段错一个，服务端就当作未登录。
+     */
+    internal fun commFields(
         uin: String,
         cookie: String,
         authst: String,
@@ -966,7 +973,13 @@ class QqMusicSource @Inject constructor(
      * 带凭证自愈的 CGI 请求：响应含凭证过期错误码（1000 / 104401）且当前带 cookie 时，
      * 用 refresh_key / refresh_token 自动续期一次并重试一次。
      */
-    private suspend fun cgiPost(json: String, cookie: String): String? {
+    /**
+     * musicu POST（带鉴权续期兜底）。
+     *
+     * **不是 private**：QQ 评论写接口（`QqComment`）也要用 —— 走同一条通道才能共享
+     * 「凭证过期自动续期一次」这套逻辑，否则用户会看到莫名其妙的「登录态已失效」。
+     */
+    internal suspend fun cgiPost(json: String, cookie: String): String? {
         val first = cgiPostRaw(json, cookie)
         if (cookie.isBlank() || !hasCredentialExpiredCode(first)) return first
         val refreshed = refreshQqCredential() ?: return first

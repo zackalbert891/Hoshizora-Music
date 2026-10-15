@@ -10,9 +10,11 @@ import com.puremusic.model.CommentSource
 import com.puremusic.model.MusicSourceType
 import com.puremusic.source.match.SongMatcher
 import com.puremusic.source.netease.CommentPage
+import com.puremusic.source.netease.MAX_COMMENT_LEN
 import com.puremusic.source.netease.NeteaseComment
 import com.puremusic.source.netease.NeteaseMusicSource
 import com.puremusic.source.netease.PostResult
+import com.puremusic.source.qq.MAX_QQ_COMMENT_LEN
 import com.puremusic.source.qq.QqComment
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
@@ -56,6 +58,10 @@ data class ReplyTarget(
     val userId: Long,
 )
 
+/** 登录引导去向：评论页按**当前走通的通道**决定跳 QQ 登录还是网易云登录。 */
+const val LOGIN_TARGET_QQ = "qq"
+const val LOGIN_TARGET_NETEASE = "netease"
+
 /** 评论页状态：精彩评论 + 最新评论（全量串流）+ 发表评论相关。 */
 data class CommentsUiState(
     val total: Int = 0,
@@ -74,14 +80,26 @@ data class CommentsUiState(
     val platform: String = "",
     /** 一次性提示（点赞失败 / 未登录等）：UI 弹完即清。 */
     val hint: String? = null,
-    /** 这个评论区能不能**真的**点赞：网易云通道 + 已登录（QQ 通道还没接写接口）。 */
+    /** 这个评论区能不能**真的**点赞：跟着当前通道的登录态实时变。 */
     val canLike: Boolean = false,
-    /** 能不能**发表评论**：必须是网易云通道（写接口只接了网易云）+ 已登录 + 映射到了歌曲。 */
+    /** 能不能**发表评论**：当前通道已登录 + 已定位到该平台的歌曲 id。 */
     val canPost: Boolean = false,
+    /**
+     * 点登录引导时该去哪个登录页：`qq` / `netease`。
+     *
+     * 必须由**实际走通的评论通道**决定，而不是歌曲来源 —— QQ 源拿不到评论时
+     * 会回落到网易云映射，这时候一条「登录 QQ 音乐」的引导反而是错的。
+     */
+    val loginTarget: String = "",
     /** 正在回复的那条评论；非空时输入栏变成回复态。 */
     val replyTo: ReplyTarget? = null,
     /** 正在发送（输入栏发送按钮转圈，防连点刷屏）。 */
     val sending: Boolean = false,
+    /**
+     * 输入栏允许的最长字数：**按平台**给 —— 网易云 1000，QQ 音乐只有 300。
+     * 让用户敲完 500 字才被服务端拒掉，是最没道理的失败。
+     */
+    val maxLength: Int = MAX_COMMENT_LEN,
 )
 
 /**
@@ -145,23 +163,38 @@ class CommentsViewModel @Inject constructor(
     private val platformLabel: String
         get() = if (useQqChannel) "QQ音乐" else "网易云"
 
-    /** 点赞能不能落到服务端：跟着登录态实时变（登录页返回后 banner 自己消失）。 */
+    /** QQ 登录 cookie：写接口（发/删/赞）全靠它，为空即未登录。 */
+    private val qqCookie: String
+        get() = accountStore.accounts.value[MusicSourceType.QQ]?.cookie.orEmpty()
+
+    private val qqLoggedIn: Boolean get() = qqCookie.isNotBlank()
+
+    /** 本机登录的 QQ 号（cookie 里的 uin），用来认"哪条评论是我发的"。 */
+    private val qqUin: Long
+        get() = Regex("(?:^|;)\\s*uin=([^;]*)").find(qqCookie)?.groupValues?.get(1)
+            ?.removePrefix("o")?.trim()?.toLongOrNull() ?: 0L
+
+    /** 本次会话里自己发的评论 id：uin 对不上时的兜底（服务端偶有不回 uin 的版本）。 */
+    private val myCommentIds = HashSet<String>(8)
+
+    /** 点赞能不能落到服务端：跟着**当前通道**的登录态实时变（登录页返回后 banner 自己消失）。 */
     private fun canLikeNow(): Boolean =
-        !useQqChannel && !accountStore.currentNeteaseCookie.isNullOrBlank()
+        if (useQqChannel) qqLoggedIn
+        else !accountStore.currentNeteaseCookie.isNullOrBlank()
 
     /**
-     * 发表评论能不能落到服务端：写接口只接了网易云，所以三个条件都要满足 ——
-     * ① 网易云通道（QQ 评论暂不支持写）、② 已登录、③ 已映射到网易云歌曲 id。
+     * 发表评论能不能落到服务端：当前通道已登录 + 已定位到该平台的歌曲 id
+     * （QQ 要数字 songid，网易云要歌曲 id）。
      */
     private fun canPostNow(): Boolean =
-        !useQqChannel &&
-            !accountStore.currentNeteaseCookie.isNullOrBlank() &&
-            !resolvedId.isNullOrBlank()
+        if (useQqChannel) qqLoggedIn && !qqSongMid.isNullOrBlank()
+        else !accountStore.currentNeteaseCookie.isNullOrBlank() && !resolvedId.isNullOrBlank()
 
     init {
         // 登录态一变就刷新"能不能点赞/发表"：去登录页登完回来看不到那条引导了。
+        // 两个平台的账号都要听 —— QQ 歌的评论区现在也能写，不再只看网易云。
         viewModelScope.launch {
-            accountStore.neteaseCookie.collect {
+            accountStore.accounts.collect {
                 _state.value = _state.value.copy(canLike = canLikeNow(), canPost = canPostNow())
             }
         }
@@ -257,6 +290,8 @@ class CommentsViewModel @Inject constructor(
             platform = platformLabel,
             canLike = canLikeNow(),
             canPost = canPostNow(),
+            loginTarget = if (useQqChannel) LOGIN_TARGET_QQ else LOGIN_TARGET_NETEASE,
+            maxLength = if (useQqChannel) MAX_QQ_COMMENT_LEN else MAX_COMMENT_LEN,
         )
     }
 
@@ -417,35 +452,37 @@ class CommentsViewModel @Inject constructor(
     /**
      * 点赞 / 取消点赞（**写服务端**，刷新后依然在）。
      *
-     * 流程：乐观更新（先动 UI，不等网络）→ 打网易云点赞接口 → 失败则回滚 + 提示。
+     * 流程：乐观更新（先动 UI，不等网络）→ 打对应平台的点赞接口 → 失败则回滚 + 提示。
      * 未登录时**不改 UI**，只提示：本地假装点上，下次刷新就掉了，反而更像 bug。
-     * QQ 评论通道暂未接入写接口（另一套登录态与签名），保持纯视觉反馈。
+     * 两个平台各有一套写接口（QQ 走 [QqComment.setLike]，网易云走 [NeteaseComment.setLike]），
+     * 按当前实际走通的评论通道分流。
      */
     fun toggleLike(comment: Comment) {
         if (comment.id in likePending) return
         val nowLiked = !comment.liked
-        if (useQqChannel) {
-            applyLike(comment.id, nowLiked)
+        if (!canLikeNow()) {
+            emitHint(if (useQqChannel) "登录 QQ 音乐账号后即可点赞" else "登录网易云账号后即可点赞")
             return
         }
-        val songId = resolvedId
-        if (songId.isNullOrBlank()) {
+        val reachable = if (useQqChannel) !qqSongMid.isNullOrBlank() else !resolvedId.isNullOrBlank()
+        if (!reachable) {
             applyLike(comment.id, nowLiked)
-            return
-        }
-        if (accountStore.currentNeteaseCookie.isNullOrBlank()) {
-            _state.value = _state.value.copy(hint = "登录网易云账号后即可点赞")
             return
         }
         applyLike(comment.id, nowLiked)
         likePending.add(comment.id)
         viewModelScope.launch {
-            val ok = runCatching { neteaseComment.setLike(songId, comment.id, nowLiked) }
-                .getOrDefault(false)
+            val ok = runCatching {
+                if (useQqChannel) qqComment.setLike(comment.id, nowLiked)
+                else neteaseComment.setLike(resolvedId.orEmpty(), comment.id, nowLiked)
+            }.getOrDefault(false)
             likePending.remove(comment.id)
             if (!ok) {
                 applyLike(comment.id, !nowLiked)
-                _state.value = _state.value.copy(hint = "点赞没成功：登录态可能已过期")
+                emitHint(
+                    if (useQqChannel) "点赞没成功：QQ 登录态可能已过期"
+                    else "点赞没成功：登录态可能已过期",
+                )
             }
         }
     }
@@ -486,29 +523,45 @@ class CommentsViewModel @Inject constructor(
      */
     fun sendComment(text: String, onSent: () -> Unit = {}) {
         if (_state.value.sending) return
-        val songId = resolvedId
-        if (songId.isNullOrBlank()) {
-            _state.value = _state.value.copy(hint = "没定位到这首歌的网易云 id，发不出去")
-            return
-        }
-        if (useQqChannel) {
-            _state.value = _state.value.copy(hint = "QQ 评论区暂不支持发表，会已切到网易云评论")
-            return
-        }
-        if (accountStore.currentNeteaseCookie.isNullOrBlank()) {
-            _state.value = _state.value.copy(hint = "登录网易云账号后才能发评论")
-            return
-        }
         val reply = _state.value.replyTo
+        // 先校验（各平台的失败原因不一样），再进 sending，避免"转圈一下就没了"还看不出原因
+        if (useQqChannel) {
+            if (qqSongMid.isNullOrBlank()) {
+                emitHint("没定位到这首歌的 QQ 评论 id，发不出去")
+                return
+            }
+            if (!qqLoggedIn) {
+                emitHint("登录 QQ 音乐账号后才能发评论")
+                return
+            }
+        } else {
+            if (resolvedId.isNullOrBlank()) {
+                emitHint("没定位到这首歌的网易云 id，发不出去")
+                return
+            }
+            if (accountStore.currentNeteaseCookie.isNullOrBlank()) {
+                emitHint("登录网易云账号后才能发评论")
+                return
+            }
+        }
+        val useQq = useQqChannel
         _state.value = _state.value.copy(sending = true)
         viewModelScope.launch {
             val result = runCatching {
-                neteaseComment.postComment(
-                    songId = songId,
-                    content = text,
-                    replyToCommentId = reply?.commentId.orEmpty(),
-                    replyToUserId = reply?.userId ?: 0L,
-                )
+                if (useQq) {
+                    qqComment.postComment(
+                        songMid = qqSongMid.orEmpty(),
+                        content = text,
+                        replyToCommentId = reply?.commentId.orEmpty(),
+                    )
+                } else {
+                    neteaseComment.postComment(
+                        songId = resolvedId.orEmpty(),
+                        content = text,
+                        replyToCommentId = reply?.commentId.orEmpty(),
+                        replyToUserId = reply?.userId ?: 0L,
+                    )
+                }
             }.getOrElse {
                 Log.w(TAG, "发表异常", it)
                 PostResult.Failure("发送失败：网络异常")
@@ -519,6 +572,7 @@ class CommentsViewModel @Inject constructor(
                     val shown = result.comment ?: localEcho(text, result.commentId)
                     if (shown.id.isNotBlank()) {
                         seenIds.add(shown.id)
+                        myCommentIds.add(shown.id)
                         _state.value = _state.value.copy(
                             comments = listOf(shown) + _state.value.comments,
                             total = _state.value.total + 1,
@@ -545,11 +599,13 @@ class CommentsViewModel @Inject constructor(
 
     /** 服务端只回 commentId 没回对象时，按本地信息拼一条能显示的（id 是真的，其余仅展示用）。 */
     private fun localEcho(text: String, commentId: String): Comment {
-        val account = accountStore.accounts.value[MusicSourceType.NETEASE]
+        val account = accountStore.accounts.value[
+            if (useQqChannel) MusicSourceType.QQ else MusicSourceType.NETEASE,
+        ]
         return Comment(
             id = commentId,
-            source = CommentSource.NETEASE,
-            userId = account?.userId?.toLongOrNull() ?: 0L,
+            source = if (useQqChannel) CommentSource.QQ else CommentSource.NETEASE,
+            userId = if (useQqChannel) qqUin else account?.userId?.toLongOrNull() ?: 0L,
             userName = account?.nickname.orEmpty().ifBlank { "我" },
             avatarUrl = account?.avatarUrl.orEmpty(),
             content = text.trim(),
@@ -560,18 +616,23 @@ class CommentsViewModel @Inject constructor(
     /**
      * 删除自己发的评论（真删服务端）。
      *
-     * 只在"当前登录 uid == 评论 userId"时才给 UI 入口 —— 网易云对删他人评论一律 40102，
+     * 只在"这条是我自己发的"时才给 UI 入口 —— 两个平台对删他人评论都是直接拒绝，
      * 让用户点了再报错毫无意义。服务端确认删掉后才从列表移除，失败保留原样并提示。
      */
     fun deleteComment(comment: Comment) {
-        val songId = resolvedId ?: return
         if (comment.id in likePending) return
+        val useQq = useQqChannel
+        // 没定位到平台歌曲 id 就无从删起（正常不会走到：入口只在加载成功的评论区里出现）
+        if (if (useQq) qqSongMid.isNullOrBlank() else resolvedId.isNullOrBlank()) return
         likePending.add(comment.id)
         viewModelScope.launch {
-            val ok = runCatching { neteaseComment.deleteComment(songId, comment.id) }
-                .getOrDefault(false)
+            val ok = runCatching {
+                if (useQq) qqComment.deleteComment(qqSongMid.orEmpty(), comment.id)
+                else neteaseComment.deleteComment(resolvedId.orEmpty(), comment.id)
+            }.getOrDefault(false)
             likePending.remove(comment.id)
             if (ok) {
+                myCommentIds.remove(comment.id)
                 _state.value = _state.value.let { s ->
                     s.copy(
                         comments = s.comments.filterNot { it.id == comment.id },
@@ -581,7 +642,10 @@ class CommentsViewModel @Inject constructor(
                     )
                 }
             } else {
-                _state.value = _state.value.copy(hint = "删除失败：登录态可能已过期")
+                emitHint(
+                    if (useQq) "删除失败：QQ 登录态可能已过期"
+                    else "删除失败：登录态可能已过期",
+                )
             }
         }
     }
@@ -589,11 +653,18 @@ class CommentsViewModel @Inject constructor(
     /**
      * 当前登录 uid：用于判定哪些评论是"我自己发的"（决定给不给删除按钮）。
      *
-     * 网易云删他人评论一律返回 40102，所以这个判断必须在客户端做 ——
+     * 两个平台都拒绝删他人评论，所以这个判断必须在客户端做 ——
      * 让人点了才报错，比不给入口更糟。
      */
     val myUserId: Long
-        get() = accountStore.accounts.value[MusicSourceType.NETEASE]?.userId?.toLongOrNull() ?: 0L
+        get() = if (useQqChannel) qqUin
+        else accountStore.accounts.value[MusicSourceType.NETEASE]?.userId?.toLongOrNull() ?: 0L
+
+    /** 这条评论是不是我发的（服务端标的 IsSelf / uid 对得上 / 本次会话里就是我发的）。 */
+    fun isMine(comment: Comment): Boolean =
+        comment.isSelf ||
+            comment.id in myCommentIds ||
+            (myUserId > 0L && comment.userId == myUserId)
 
     /** 只改一条评论的点赞态与计数（热评与最新列表里可能同时挂着同一条）。 */
     private fun applyLike(id: String, liked: Boolean) {
@@ -610,6 +681,11 @@ class CommentsViewModel @Inject constructor(
     /** UI 弹完提示后调用，避免同一条提示被重复弹出。 */
     fun consumeHint() {
         if (_state.value.hint != null) _state.value = _state.value.copy(hint = null)
+    }
+
+    /** 弹一条一次性提示。 */
+    private fun emitHint(text: String) {
+        _state.value = _state.value.copy(hint = text)
     }
 
     /**

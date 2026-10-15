@@ -56,6 +56,7 @@ import com.puremusic.model.Song
 import com.puremusic.model.albumEntityId
 import com.puremusic.model.artistEntityId
 import com.puremusic.ui.comments.CommentsScreen
+import com.puremusic.ui.comments.LOGIN_TARGET_QQ
 import com.puremusic.ui.components.AppBackground
 import com.puremusic.ui.components.MiniPlayer
 import com.puremusic.ui.discover.DiscoverScreen
@@ -317,7 +318,17 @@ fun AppRoot() {
                 ) {
                     CommentsScreen(
                         onBack = { navController.popBackStack() },
-                        onLogin = { navController.navigate(Destinations.NETEASE_LOGIN) },
+                        // 登录引导跟着**实际走通的评论通道**走：QQ 源拿不到评论时会回落到
+                        // 网易云映射，那时平台已经是网易云，引导去 QQ 登录就错了。
+                        onLogin = { target ->
+                            navController.navigate(
+                                if (target == LOGIN_TARGET_QQ) {
+                                    Destinations.LOGIN
+                                } else {
+                                    Destinations.NETEASE_LOGIN
+                                },
+                            )
+                        },
                     )
                 }
                 composable(Destinations.LOGIN) {
