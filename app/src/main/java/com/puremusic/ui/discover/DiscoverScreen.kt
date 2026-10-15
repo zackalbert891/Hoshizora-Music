@@ -51,6 +51,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.puremusic.model.MusicSourceType
 import com.puremusic.model.Song
 import com.puremusic.ui.components.Cover
 import com.puremusic.ui.components.SongRow
@@ -109,6 +110,12 @@ fun DiscoverScreen(
             }
         }
 
+        SourceSwitch(
+            selected = state.source,
+            onSelect = vm::selectSource,
+            modifier = Modifier.padding(horizontal = UiTokens.SpaceL, vertical = 2.dp),
+        )
+
         TabRow(
             selected = state.tab,
             onSelect = vm::selectTab,
@@ -134,6 +141,8 @@ fun DiscoverScreen(
             when (state.tab) {
                 DiscoverTab.RECOMMEND -> recommendSection(
                     daily = state.daily,
+                    source = state.source,
+                    loggedIn = state.loggedIn,
                     onPlayAll = { song, list ->
                         vm.play(song, list)
                         onOpenNowPlaying()
@@ -156,7 +165,7 @@ fun DiscoverScreen(
                                 items(group.tiles, key = { "tl-" + it.id }) { tile ->
                                     ToplistCard(
                                         tile = tile,
-                                        onClick = { onOpenPlaylist("netease", tile.kindRef, tile.name) },
+                                        onClick = { onOpenPlaylist(state.source.id, tile.kindRef, tile.name) },
                                     )
                                 }
                             }
@@ -183,7 +192,7 @@ fun DiscoverScreen(
                         PlaylistRow(
                             tile = tile,
                             index = index,
-                            onClick = { onOpenPlaylist("netease", tile.kindRef, tile.name) },
+                            onClick = { onOpenPlaylist(state.source.id, tile.kindRef, tile.name) },
                         )
                     }
                     if (state.squareLoadingMore) {
@@ -203,8 +212,46 @@ fun DiscoverScreen(
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  页签
+//  音源切换 + 页签
 // ═══════════════════════════════════════════════════════════════
+
+/**
+ * 音源切换条：网易云 / QQ 音乐 两个胶囊，决定发现页整页内容归属哪个平台。
+ * 与页签条视觉一致（未选中淡底、选中主题色），但语义是「换数据源」而非「换页签」。
+ */
+@Composable
+private fun SourceSwitch(
+    selected: MusicSourceType,
+    onSelect: (MusicSourceType) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Row(modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        listOf(
+            MusicSourceType.NETEASE to "网易云",
+            MusicSourceType.QQ to "QQ音乐",
+        ).forEach { (src, label) ->
+            val on = src == selected
+            val tint = if (on) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+            Box(
+                Modifier
+                    .clip(CircleShape)
+                    .background(
+                        if (on) MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+                        else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f)
+                    )
+                    .pressable(scaleDown = 0.95f, onClick = { onSelect(src) })
+                    .padding(horizontal = 18.dp, vertical = 8.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    label,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = tint,
+                )
+            }
+        }
+    }
+}
 
 /** 页签条：三个胶囊，未选中是淡底、选中是主题色。 */
 @Composable
@@ -252,6 +299,8 @@ private fun TabRow(
  */
 private fun androidx.compose.foundation.lazy.LazyListScope.recommendSection(
     daily: List<Song>,
+    source: MusicSourceType,
+    loggedIn: Boolean,
     onPlayAll: (Song, List<Song>) -> Unit,
 ) {
     if (daily.isNotEmpty()) {
@@ -266,7 +315,18 @@ private fun androidx.compose.foundation.lazy.LazyListScope.recommendSection(
         }
     } else {
         item(key = "rec-empty") {
-            ErrorHint("登录网易云后这里会显示每天为你推荐的 30 首")
+            ErrorHint(
+                when {
+                    !loggedIn && source == MusicSourceType.NETEASE ->
+                        "登录网易云后这里会显示每天为你推荐的 30 首"
+                    !loggedIn ->
+                        "登录 QQ 音乐后这里会显示每日推荐"
+                    source == MusicSourceType.NETEASE ->
+                        "每日推荐今天没返回内容，点右上角刷新重试"
+                    else ->
+                        "QQ 每日推荐接口返回为空，点右上角刷新重试"
+                },
+            )
         }
     }
 }

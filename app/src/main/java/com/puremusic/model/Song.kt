@@ -1,5 +1,9 @@
 package com.puremusic.model
 
+import com.puremusic.source.netease.EXTRA_ALBUM_ID
+import com.puremusic.source.netease.EXTRA_ARTIST_ID
+import com.puremusic.source.qq.EXTRA_QQ_ALBUM_ID
+import com.puremusic.source.qq.EXTRA_QQ_SINGER_MID
 import java.io.Serializable
 
 /** 音乐平台来源。新增平台 = 加一个枚举值 + 一个 MusicSource 实现。 */
@@ -39,4 +43,23 @@ data class Song(
 
     /** 全局唯一标识：source:id，同时用作 MediaItem.mediaId。 */
     val mediaId: String get() = "${source.id}:$id"
+}
+
+/**
+ * 歌手页路由 key（源无关）：网易云取 `arId`，QQ 取 `qqSingerMid`（singermid）。
+ * 返回 null 表示这首歌没有该 id，调用方据此**不显示入口**，而不是跳到一个空页面。
+ */
+fun Song.artistEntityId(): String? = when (source) {
+    MusicSourceType.NETEASE -> extra[EXTRA_ARTIST_ID]?.takeIf { it.isNotBlank() && it != "0" }
+    MusicSourceType.QQ -> extra[EXTRA_QQ_SINGER_MID]?.takeIf { it.isNotBlank() }
+    else -> null
+}
+
+/**
+ * 专辑页路由 key（源无关）：网易云取 `alId`，QQ 取 `qqAlbumId`（数字 albumid）。
+ */
+fun Song.albumEntityId(): String? = when (source) {
+    MusicSourceType.NETEASE -> extra[EXTRA_ALBUM_ID]?.takeIf { it.isNotBlank() && it != "0" }
+    MusicSourceType.QQ -> extra[EXTRA_QQ_ALBUM_ID]?.takeIf { it.isNotBlank() }
+    else -> null
 }

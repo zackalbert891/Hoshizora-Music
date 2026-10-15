@@ -15,6 +15,7 @@ import com.puremusic.source.SourceRegistry
 import com.puremusic.source.netease.NeteaseDiscover
 import com.puremusic.source.netease.NeteaseMusicSource
 import com.puremusic.source.netease.neteaseSongToSong
+import com.puremusic.source.qq.QqDiscover
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
@@ -56,6 +57,7 @@ class PlaylistViewModel @Inject constructor(
     private val repository: MusicRepository,
     private val discover: NeteaseDiscover,
     private val netease: NeteaseMusicSource,
+    private val qqDiscover: QqDiscover,
     private val accountStore: AccountStore,
 ) : ViewModel() {
 
@@ -83,6 +85,13 @@ class PlaylistViewModel @Inject constructor(
         collectJob?.cancel()
         error = null
         _detail.value = PlaylistDetailState(name = name)
+
+        // QQ 榜单：topid 与歌单 dissid 是两套命名空间，getPlaylistDetail 只认 dissid，
+        // 故 QQ 榜单用 `top:` 前缀区分，单独走 QqDiscover.toplistSongs 取歌。
+        if (sourceId == MusicSourceType.QQ.id && playlistId.startsWith("top:")) {
+            loadQqToplist(playlistId.removePrefix("top:"))
+            return
+        }
 
         when (sourceId) {
             KIND_FAVORITES -> {
@@ -136,6 +145,21 @@ class PlaylistViewModel @Inject constructor(
                 .onSuccess { songs = it }
                 .onFailure { error = it.message ?: "加载失败" }
             loading = false
+        }
+    }
+
+    /**
+     * QQ 榜单详情：topid 不是歌单 dissid，不能走 [loadOnline]，
+     * 单独用 [QqDiscover.toplistSongs] 拉歌。元信息只取名称（榜单无创建者/描述）。
+     */
+    private fun loadQqToplist(topid: String) {
+        viewModelScope.launch {
+            loading = true
+            error = null
+            val list = runCatching { qqDiscover.toplistSongs(topid) }.getOrDefault(emptyList())
+            songs = list
+            loading = false
+            if (list.isEmpty()) error = "该榜单暂时无法加载，检查网络"
         }
     }
 

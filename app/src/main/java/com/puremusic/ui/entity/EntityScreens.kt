@@ -44,7 +44,6 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.puremusic.model.Song
-import com.puremusic.source.netease.NeteaseAlbumCard
 import com.puremusic.ui.components.Cover
 import com.puremusic.ui.components.SongRow
 import com.puremusic.ui.theme.UiTokens
@@ -53,13 +52,13 @@ import com.puremusic.ui.theme.pressable
 /**
  * 歌手页：头像 + 简介 + 专辑网格。
  *
- * **为什么没有「歌手热门歌曲」区**：网易云 `/api/artist/songs`、`/api/artist/top/songs`、
- * `/api/v1/artist/<id>/topSong` 在裸 GET 下全部 404（2026-10-12 实测），
- * 拿不到曲目。所以这里给的是「资料 + 专辑列表」，点进专辑页才有完整曲目。
- * 不要为了「看起来完整」去接一个必然空白的热门歌曲区。
+ * **网易云与 QQ 共用这一页**：网易云拿不到「歌手热门歌曲」（相关接口已全下线），
+ * 所以给的是「资料 + 专辑列表」；QQ 同样只给「资料 + 专辑列表」。
+ * 点进专辑页才有完整曲目。不要为了「看起来完整」去接一个必然空白的热门歌曲区。
  */
 @Composable
 fun ArtistScreen(
+    sourceId: String,
     artistId: String,
     onBack: () -> Unit,
     onOpenAlbum: (albumId: String, name: String) -> Unit,
@@ -69,7 +68,7 @@ fun ArtistScreen(
     val vm: ArtistViewModel = hiltViewModel()
     val state by vm.state.collectAsStateWithLifecycle()
 
-    LaunchedEffect(artistId) { vm.load(artistId) }
+    LaunchedEffect(sourceId, artistId) { vm.load(sourceId, artistId) }
 
     val detail = state.detail
     LazyColumn(
@@ -91,7 +90,7 @@ fun ArtistScreen(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
                 )
-                IconButton(onClick = { vm.load(artistId) }) {
+                IconButton(onClick = { vm.load(sourceId, artistId) }) {
                     Icon(Icons.Filled.Refresh, contentDescription = "刷新")
                 }
             }
@@ -176,7 +175,7 @@ fun ArtistScreen(
             item(key = "albums") {
                 AlbumGrid(
                     albums = state.albums,
-                    onOpenAlbum = { onOpenAlbum(it.id.toString(), it.name) },
+                    onOpenAlbum = { onOpenAlbum(it.id, it.name) },
                 )
             }
             // 专辑列表已经一次性铺完（不是懒加载列表），翻页由底部按钮显式触发，
@@ -208,8 +207,8 @@ fun ArtistScreen(
 /** 专辑网格：3 列方形封面 + 名称 / 曲目数。 */
 @Composable
 private fun AlbumGrid(
-    albums: List<NeteaseAlbumCard>,
-    onOpenAlbum: (NeteaseAlbumCard) -> Unit,
+    albums: List<UiAlbumCard>,
+    onOpenAlbum: (UiAlbumCard) -> Unit,
 ) {
     LazyVerticalGrid(
         columns = GridCells.Fixed(3),
@@ -255,6 +254,7 @@ private fun AlbumGrid(
  */
 @Composable
 fun AlbumScreen(
+    sourceId: String,
     albumId: String,
     onBack: () -> Unit,
     onOpenArtist: (artistId: String, name: String) -> Unit = { _, _ -> },
@@ -264,7 +264,7 @@ fun AlbumScreen(
     val vm: AlbumViewModel = hiltViewModel()
     val state by vm.state.collectAsStateWithLifecycle()
 
-    LaunchedEffect(albumId) { vm.load(albumId) }
+    LaunchedEffect(sourceId, albumId) { vm.load(sourceId, albumId) }
 
     val detail = state.detail
     LazyColumn(
@@ -286,7 +286,7 @@ fun AlbumScreen(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
                 )
-                IconButton(onClick = { vm.load(albumId) }) {
+                IconButton(onClick = { vm.load(sourceId, albumId) }) {
                     Icon(Icons.Filled.Refresh, contentDescription = "刷新")
                 }
             }
@@ -321,14 +321,14 @@ fun AlbumScreen(
                         )
                         val artistName = detail?.artistName.orEmpty()
                         if (artistName.isNotBlank()) {
-                            val aid = detail?.artistId ?: 0L
+                            val aid = detail?.artistId.orEmpty()
                             Text(
                                 artistName,
                                 style = MaterialTheme.typography.bodySmall,
-                                color = if (aid > 0L) MaterialTheme.colorScheme.primary
+                                color = if (aid.isNotBlank()) MaterialTheme.colorScheme.primary
                                 else MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = if (aid > 0L) {
-                                    Modifier.clickable { onOpenArtist(aid.toString(), artistName) }
+                                modifier = if (aid.isNotBlank()) {
+                                    Modifier.clickable { onOpenArtist(aid, artistName) }
                                 } else {
                                     Modifier
                                 },

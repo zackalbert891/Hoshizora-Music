@@ -100,6 +100,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.puremusic.model.PlayMode
 import com.puremusic.model.Song
+import com.puremusic.model.albumEntityId
+import com.puremusic.model.artistEntityId
 import com.puremusic.ui.components.AddToPlaylistDialog
 import com.puremusic.ui.components.NeteaseTurntable
 import com.puremusic.ui.components.ThinSeekBar
@@ -372,12 +374,9 @@ private fun NeteaseTopBar(
         ) {
             val s = song
             if (s != null) {
-                val canArtist = s.extra[com.puremusic.source.netease.EXTRA_ARTIST_ID]
-                    ?.toLongOrNull()?.let { it > 0L } == true
+                val canArtist = s.artistEntityId() != null
                 // 专辑名与歌手名相同也要显示，不能再拿这个当隐藏条件。
-                val canAlbum = s.extra[com.puremusic.source.netease.EXTRA_ALBUM_ID]
-                    ?.toLongOrNull()?.let { it > 0L } == true &&
-                    s.album.isNotBlank()
+                val canAlbum = s.albumEntityId() != null && s.album.isNotBlank()
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     modifier = Modifier.widthIn(max = 200.dp),

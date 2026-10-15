@@ -41,6 +41,7 @@ class DiagActivity : ComponentActivity() {
     @Inject lateinit var neteaseSource: com.puremusic.source.netease.NeteaseMusicSource
     @Inject lateinit var neteaseDiscover: com.puremusic.source.netease.NeteaseDiscover
 @Inject lateinit var neteaseEntity: com.puremusic.source.netease.NeteaseEntity
+    @Inject lateinit var qqSource: com.puremusic.source.qq.QqMusicSource
     @Inject @Named("plain") lateinit var http: okhttp3.OkHttpClient
 
     private val TAG = "PureMusicDiag"
@@ -91,6 +92,9 @@ class DiagActivity : ComponentActivity() {
                 // 歌手 / 专辑页层的数据探针：
                 // adb shell am start -n com.puremusic/.DiagActivity -e only entity -e a 6452 -e al 34720827
                 "entity" -> runEntityProbe()
+                // QQ 发现层端点探针（排行榜/广场/歌手/专辑/每日推荐各候选端点横比）：
+                // adb shell am start -n com.puremusic/.DiagActivity -e only qqdiscover
+                "qqdiscover" -> runQqDiscoverProbe()
                 else -> runDiag()
             }
             tv.text = out.toString()
@@ -137,6 +141,25 @@ class DiagActivity : ComponentActivity() {
         album?.songs?.take(5)?.forEach { s ->
             line("  ${s.id} ${s.name} - ${(s.ar ?: s.artists).orEmpty().joinToString("/") { it.name }}")
         }
+        tvUpdate()
+    }
+
+    /**
+     * QQ 发现层端点探针（2026-10-15）。
+     *
+     * 把 QQ 音乐「排行榜 / 歌单广场 / 歌手页 / 专辑页 / 每日推荐」各候选 CGI 端点
+     * 一次全部打一遍，确认哪些在真机登录态下真能返回 `code:0` + 数组容器。
+     * 电脑出口 IP 打 QQ 必 500003，只能用真机验。
+     *
+     * 用法：`adb shell am start -n com.puremusic/.DiagActivity -e only qqdiscover`
+     */
+    private suspend fun runQqDiscoverProbe() = withContext(Dispatchers.IO) {
+        line("════════ QQ 发现层端点探针 ════════")
+        val result = runCatching { qqSource.probeDiscover() }.getOrElse { e -> "探针异常: ${e.message}" }
+        line(result)
+        // release 包 Log.d 被优化掉，但 Log.e 在；把完整结果分块打进 logcat，
+        // 这样即使看不了屏幕也能完整读到每条端点的命中/失败与响应样本。
+        result.chunked(3500).forEach { android.util.Log.e("QqDiscover", it) }
         tvUpdate()
     }
 

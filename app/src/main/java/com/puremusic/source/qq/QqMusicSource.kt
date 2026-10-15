@@ -3,6 +3,7 @@ package com.puremusic.source.qq
 import com.google.gson.Gson
 import com.google.gson.JsonElement
 import com.google.gson.JsonParser
+import com.google.gson.annotations.SerializedName
 import com.puremusic.data.AccountStore
 import com.puremusic.data.SettingsStore
 import com.puremusic.lyrics.LrcParser
@@ -24,6 +25,23 @@ import javax.inject.Inject
 import javax.inject.Named
 import javax.inject.Singleton
 
+/**
+ * QQ 歌曲 extra 键：歌手 mid（字符串，如 0025NhlN2yWrP4）与数字专辑 id。
+ * 与网易云的 "arId"/"alId" 分开，避免命中旧快照导致跳错平台。
+ */
+const val EXTRA_QQ_SINGER_MID = "qqSingerMid"
+const val EXTRA_QQ_ALBUM_ID = "qqAlbumId"
+/** 专辑 mid（字符串），用于拼封面与专辑页兜底解析。 */
+const val EXTRA_QQ_ALBUM_MID = "qqAlbumMid"
+
+/** 专辑封面：T002 + albummid；无 mid 返回空串（UI 显示占位音符）。 */
+fun qqAlbumCoverUrl(albumMid: String?): String =
+    if (!albumMid.isNullOrBlank()) "https://y.gtimg.cn/music/photo_new/T002R300x300M000$albumMid.jpg" else ""
+
+/** 歌手封面：T001 + singermid。 */
+fun qqSingerCoverUrl(singerMid: String): String =
+    if (singerMid.isNotBlank()) "https://y.gtimg.cn/music/photo_new/T001R300x300M000$singerMid.jpg" else ""
+
 /** QQ 音乐搜索响应（JSONP 内层 JSON）。 */
 data class QqSearchResponse(val code: Int = 0, val data: QqData? = null)
 data class QqData(val song: QqSongContainer? = null)
@@ -35,8 +53,12 @@ data class QqSong(
     val album: QqAlbum? = null,
     val interval: Int = 0,
 )
-data class QqSinger(val name: String = "")
-data class QqAlbum(val name: String = "", val mid: String? = null)
+data class QqSinger(val name: String = "", val mid: String = "")
+data class QqAlbum(
+    val name: String = "",
+    @SerializedName(value = "album_mid", alternate = ["mid", "albummid"]) val mid: String? = null,
+    @SerializedName(value = "album_id", alternate = ["id", "albumid"]) val id: String = "",
+)
 
 /** smartbox 搜索建议响应（client_search_cp 失效时的兜底）。 */
 data class SmartboxResponse(val code: Int = 0, val data: SmartboxData? = null)
@@ -112,8 +134,12 @@ data class QqSongDetail(
     val file: QqFile? = null,
 )
 data class QqFile(val media_mid: String = "")
-data class QqSingerDetail(val name: String = "")
-data class QqAlbumDetail(val name: String = "", val mid: String = "")
+data class QqSingerDetail(val name: String = "", val mid: String = "")
+data class QqAlbumDetail(
+    val name: String = "",
+    @SerializedName(value = "album_mid", alternate = ["mid", "albummid"]) val mid: String = "",
+    @SerializedName(value = "album_id", alternate = ["id", "albumid"]) val id: String = "",
+)
 
 /**
  * QQ 音乐源：搜索、取流、歌词、歌单（我的歌单 + 歌单详情）。
@@ -218,11 +244,13 @@ class QqMusicSource @Inject constructor(
         title = name,
         artist = singer.orEmpty().joinToString(" / ") { it.name }.ifBlank { "未知歌手" },
         album = album?.name.orEmpty(),
-        coverUrl = "",
+        coverUrl = qqAlbumCoverUrl(album?.mid),
         durationMs = interval * 1000L,
         extra = buildMap {
             file?.media_mid?.takeIf { it.isNotBlank() }?.let { put(MEDIA_MID_KEY, it) }
-            album?.mid?.takeIf { !it.isNullOrBlank() }?.let { put("albumMid", it) }
+            album?.mid?.takeIf { !it.isNullOrBlank() }?.let { put(EXTRA_QQ_ALBUM_MID, it) }
+            album?.id?.takeIf { it.isNotBlank() }?.let { put(EXTRA_QQ_ALBUM_ID, it) }
+            singer?.firstOrNull()?.mid?.takeIf { it.isNotBlank() }?.let { put(EXTRA_QQ_SINGER_MID, it) }
         },
     )
 
@@ -594,6 +622,97 @@ class QqMusicSource @Inject constructor(
     }
 
     /**
+     * 发现页端点探针：把 QQ 的「排行榜 / 歌单广场 / 歌手 / 专辑 / 每日推荐」候选接口
+     * 逐个实测，返回命中情况。
+     *
+     * 只用于真机自检台（`DiagActivity -e only qqdiscover`），不参与正常 UI。
+     * 用途：决定 QqDiscover / QqEntity 数据层到底用哪组 module/method —— 这些接口
+     * 的字段名和登录要求经常漂移，电脑出口又被风控（500003），只能拿真机登录态说话。
+     *
+     * 每个候选先试 ct/cv=11/11（与歌单一致），失败再试 24/0（与取流一致）。
+     */
+    /**
+     * QQ 发现层端点探针（2026-10-15，第二轮）。
+     *
+     * 第一轮用现代 `musicu.fcg` 的 music/playlist/musichallSvr/personalrec 模块，
+     * 在真机上一律 `req_0.code=500003` 风控拒绝（与电脑出口一致）。但**同一个通道**
+     * 的 `music.search` / `vkey.GetVkeyServer` 在真机是通的 —— 说明卡的是模块族，
+     * 不是通道本身。
+     *
+     * 转机：评论接口 `fcg_global_comment_h5.fcg` 走的是老一代 `c.y.qq.com/v8/fcg-bin/...`
+     * Web 端点，匿名可读、几乎不风控。QQ 音乐老 Web 端点里就有排行榜 / 歌手 / 专辑 /
+     * 歌单广场 / 每日推荐，本探针逐一验证它们在新通道被封后是否还活着。
+     *
+     * 同时保留一个 `musicu` 搜歌基线，证明 musicu 通道本身是好的，差距只在模块。
+     */
+    suspend fun probeDiscover(): String = withContext(Dispatchers.IO) {
+        accountStore.awaitLoaded()
+        val account = accountStore.accounts.value[type]
+        val cookie = account?.cookie.orEmpty()
+        val uin = cookieField(cookie, "uin").takeIf { it.isNotBlank() }
+            ?: account?.userId.orEmpty()
+        val authst = listOf("qqmusic_key", "qm_keyst", "musickey")
+            .map { cookieField(cookie, it) }.firstOrNull { it.isNotBlank() }.orEmpty()
+
+        val sb = StringBuilder()
+        sb.appendLine("QQ 发现端点探针(Web族·第3轮)  uin=$uin 已登录=${account != null}")
+        sb.appendLine("============================================")
+
+        // (0) musicu 基线：搜歌（已知可用），证明通道没死
+        sb.appendLine("── musicu 基线：搜歌 ──")
+        run {
+            val comm = commFields(uin, cookie, authst, ct = 24, cv = 0)
+            val json = """{"req_1":{"module":"music.search.SearchCgiService","method":"DoSearchForQQMusicDesktop","param":{"query":"晴天","page_num":1,"num_per_page":5,"search_type":0}},"loginUin":"$uin","comm":{$comm}}"""
+            val resp = cgiPost(json, cookie)
+            val ok = resp?.contains("\"song\"") == true && resp.contains("\"list\"")
+            sb.appendLine("  musicu搜歌 ${if (ok) "✅ 通道活着" else "❌"} len=${resp?.length ?: 0}")
+        }
+
+        // (1) 老 Web 端点族（c.y.qq.com/v8/fcg-bin，评论接口同族）
+        // 这一轮重点试 `_cp`（content）变体：非 _cp 的 singer_detail / album_detail / toplist_opt
+        // 在真机返回 null，_cp 才是真正吐内容的版本。
+        val base = "g_tk=5381&loginUin=0&hostUin=0&format=json&inCharset=utf8" +
+            "&outCharset=utf-8&notice=0&platform=yqq.json&needNewCode=0"
+        val webCases = listOf(
+            "歌手资料_cp" to "https://c.y.qq.com/v8/fcg-bin/fcg_v8_singer_detail_cp.fcg?singermid=0025NhlN2yWrP4&$base",
+            "歌手专辑" to "https://c.y.qq.com/v8/fcg-bin/fcg_v8_singer_album.fcg?singermid=0025NhlN2yWrP4&order=time&begin=0&num=30&$base",
+            "专辑曲目_cp" to "https://c.y.qq.com/v8/fcg-bin/fcg_v8_album_detail_cp.fcg?albummid=004Z8Ihr0JlmGa&$base",
+            "专辑曲目" to "https://c.y.qq.com/v8/fcg-bin/fcg_v8_album_detail.fcg?albummid=004Z8Ihr0JlmGa&$base",
+            "榜单列表" to "https://c.y.qq.com/v8/fcg-bin/fcg_v8_toplist_opt.fcg?type=0&page=0&pagesize=300&$base",
+            "榜单详情_cp(热歌26)" to "https://c.y.qq.com/v8/fcg-bin/fcg_v8_toplist_cp.fcg?type=0&topid=26&page=0&pagesize=30&$base",
+            "榜单详情_cp(飙升27)" to "https://c.y.qq.com/v8/fcg-bin/fcg_v8_toplist_cp.fcg?type=0&topid=27&page=0&pagesize=30&$base",
+            "歌单广场" to "https://c.y.qq.com/splcloud/fcgi-bin/fcg_get_diss_by_tag.fcg?categoryId=10000000&sortId=5&pagesize=30&page=0&$base",
+            "每日推荐" to "https://c.y.qq.com/v8/fcg-bin/fcg_recommend_song_u.fcg?uin=$uin&$base",
+        )
+        var hit = 0
+        for ((label, url) in webCases) {
+            val resp = getOldWeb(url, cookie)
+            val code = resp?.let { Regex(""""code"\s*:\s*(-?\d+)""").find(it)?.groupValues?.get(1) }
+            val hasArr = resp?.let { Regex(""""\w+"\s*:\s*\[""").containsMatchIn(it) } ?: false
+            val len = resp?.length ?: 0
+            val ok = len > 120 && (code == null || code == "0") && hasArr
+            if (ok) hit++
+            sb.appendLine("${if (ok) "✅" else "❌"} $label code=$code len=$len arr=$hasArr")
+            sb.appendLine("   ${resp?.take(380)}")
+            android.util.Log.e("QqDiscover", "$label code=$code len=$len arr=$hasArr ${if (ok) "HIT" else "FAIL"}")
+        }
+        sb.appendLine("命中 $hit / ${webCases.size} (Web族)")
+        sb.toString()
+    }
+
+    /** 老 Web 端点 GET（与评论接口 fcg_global_comment_h5 同族，UA/Referer/Cookie 一致）。 */
+    private suspend fun getOldWeb(url: String, cookie: String): String? = withContext(Dispatchers.IO) {
+        val builder = Request.Builder()
+            .url(url)
+            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+                "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+            .header("Referer", "https://y.qq.com/")
+        if (cookie.isNotBlank()) builder.header("Cookie", cookie)
+        runCatching { client.newCall(builder.build()).execute().use { if (it.isSuccessful) it.body?.string().orEmpty() else "" } }
+            .getOrNull()
+    }
+
+    /**
      * 发一次 vkey 请求并返回（完整播放直链，result 码，**原始响应**）。
      *
      * 与 [requestVkeyUrl] 的区别：**不做 30 秒试听降级**，purl 为空就是没权益，
@@ -869,10 +988,13 @@ class QqMusicSource @Inject constructor(
         title = name,
         artist = singer?.joinToString(" / ") { it.name }.orEmpty().ifBlank { "未知歌手" },
         album = album?.name ?: "",
-        coverUrl = album?.mid
-            ?.let { "https://y.gtimg.cn/music/photo_new/T002R300x300M000$it.jpg" }
-            ?: "",
+        coverUrl = qqAlbumCoverUrl(album?.mid),
         durationMs = interval * 1000L,
+        extra = buildMap {
+            album?.mid?.takeIf { !it.isNullOrBlank() }?.let { put(EXTRA_QQ_ALBUM_MID, it) }
+            album?.id?.takeIf { it.isNotBlank() }?.let { put(EXTRA_QQ_ALBUM_ID, it) }
+            singer?.firstOrNull()?.mid?.takeIf { it.isNotBlank() }?.let { put(EXTRA_QQ_SINGER_MID, it) }
+        },
     )
 
     /** smartbox 结果：mid 为 songmid（取流用），封面直接用返回的 pic 地址。 */
@@ -896,12 +1018,14 @@ class QqMusicSource @Inject constructor(
         title = name,
         artist = singer?.joinToString(" / ") { it.name }.orEmpty().ifBlank { "未知歌手" },
         album = album?.name ?: "",
-        coverUrl = album?.mid.takeIf { !it.isNullOrBlank() }
-            ?.let { "https://y.gtimg.cn/music/photo_new/T002R300x300M000$it.jpg" }
-            ?: "",
+        coverUrl = qqAlbumCoverUrl(album?.mid),
         durationMs = interval * 1000L,
-        extra = file?.media_mid?.takeIf { it.isNotBlank() }
-            ?.let { mapOf(MEDIA_MID_KEY to it) } ?: emptyMap(),
+        extra = buildMap {
+            file?.media_mid?.takeIf { it.isNotBlank() }?.let { put(MEDIA_MID_KEY, it) }
+            album?.mid?.takeIf { it.isNotBlank() }?.let { put(EXTRA_QQ_ALBUM_MID, it) }
+            album?.id?.takeIf { it.isNotBlank() }?.let { put(EXTRA_QQ_ALBUM_ID, it) }
+            singer?.firstOrNull()?.mid?.takeIf { it.isNotBlank() }?.let { put(EXTRA_QQ_SINGER_MID, it) }
+        },
     )
 
     private fun stripJsonp(body: String): String {

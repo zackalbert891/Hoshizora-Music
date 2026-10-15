@@ -53,8 +53,8 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.puremusic.source.autoswitch.AutoSwitchSource
 import com.puremusic.model.Song
-import com.puremusic.source.netease.EXTRA_ALBUM_ID
-import com.puremusic.source.netease.EXTRA_ARTIST_ID
+import com.puremusic.model.albumEntityId
+import com.puremusic.model.artistEntityId
 import com.puremusic.ui.comments.CommentsScreen
 import com.puremusic.ui.components.AppBackground
 import com.puremusic.ui.components.MiniPlayer
@@ -92,14 +92,14 @@ object Destinations {
     const val SOURCE = "source/{sourceId}"
     /** 发现页：推荐 / 榜单 / 歌单广场（对标 NCMusic 的「发现」）。 */
     const val DISCOVER = "discover"
-    /** 歌手页（网易云 `/api/v1/artist/<id>`）。 */
-    const val ARTIST = "artist/{artistId}"
-    /** 专辑页（网易云 `/api/v1/album/<id>`）。 */
-    const val ALBUM = "album/{albumId}"
+    /** 歌手页（源无关：网易云 arId / QQ singermid）。 */
+    const val ARTIST = "artist/{sourceId}/{artistId}"
+    /** 专辑页（源无关：网易云 alId / QQ 数字 albumid）。 */
+    const val ALBUM = "album/{sourceId}/{albumId}"
 
-    fun artist(artistId: String) = "artist/$artistId"
+    fun artist(sourceId: String, artistId: String) = "artist/$sourceId/$artistId"
 
-    fun album(albumId: String) = "album/$albumId"
+    fun album(sourceId: String, albumId: String) = "album/$sourceId/$albumId"
 
     fun comments(songId: String, sourceId: String, title: String, artist: String) =
         "comments/${Uri.encode(songId)}/$sourceId/${Uri.encode(title)}/${Uri.encode(artist)}"
@@ -113,13 +113,10 @@ object Destinations {
 }
 
 /**
- * 取歌曲 extra 里的实体 id（歌手 / 专辑）。
- *
- * 返回 null 表示这首歌没有该 id（比如换源来的其他平台歌曲、或换源失败退化的旧快照），
+ * 取歌曲 extra 里的实体 id（歌手 / 专辑）走 [com.puremusic.model.artistEntityId] /
+ * [com.puremusic.model.albumEntityId]（源无关），返回 null 表示这首歌没有该 id，
  * 调用方据此**不显示入口**，而不是跳到一个空页面。
  */
-private fun Song.entityId(key: String): String? =
-    extra[key]?.toLongOrNull()?.takeIf { it > 0L }?.toString()
 
 @Composable
 fun AppRoot() {
@@ -289,13 +286,13 @@ fun AppRoot() {
                         onBack = { navController.popBackStack() },
                         onCoverColor = { vm.updateCoverSeed(it) },
                         onArtist = { song ->
-                            song.entityId(EXTRA_ARTIST_ID)?.let {
-                                navController.navigate(Destinations.artist(it))
+                            song.artistEntityId()?.let {
+                                navController.navigate(Destinations.artist(song.source.id, it))
                             }
                         },
                         onAlbum = { song ->
-                            song.entityId(EXTRA_ALBUM_ID)?.let {
-                                navController.navigate(Destinations.album(it))
+                            song.albumEntityId()?.let {
+                                navController.navigate(Destinations.album(song.source.id, it))
                             }
                         },
                         onComments = { song ->
@@ -353,33 +350,43 @@ fun AppRoot() {
                         onBack = { navController.popBackStack() },
                         onOpenNowPlaying = { navController.navigate(Destinations.NOW_PLAYING) },
                         onLogin = { navController.navigate(Destinations.NETEASE_LOGIN) },
-                        onOpenArtist = { aid -> navController.navigate(Destinations.artist(aid)) },
-                        onOpenAlbum = { alId -> navController.navigate(Destinations.album(alId)) },
+                        onOpenArtist = { aid -> navController.navigate(Destinations.artist(sourceId, aid)) },
+                        onOpenAlbum = { alId -> navController.navigate(Destinations.album(sourceId, alId)) },
                     )
                 }
                 composable(
                     Destinations.ARTIST,
-                    arguments = listOf(navArgument("artistId") { type = NavType.StringType }),
+                    arguments = listOf(
+                        navArgument("sourceId") { type = NavType.StringType },
+                        navArgument("artistId") { type = NavType.StringType },
+                    ),
                 ) { entry ->
+                    val sourceId = entry.arguments?.getString("sourceId").orEmpty()
                     val artistId = entry.arguments?.getString("artistId").orEmpty()
                     ArtistScreen(
+                        sourceId = sourceId,
                         artistId = artistId,
                         onBack = { navController.popBackStack() },
                         onOpenAlbum = { albumId, _ ->
-                            navController.navigate(Destinations.album(albumId))
+                            navController.navigate(Destinations.album(sourceId, albumId))
                         },
                     )
                 }
                 composable(
                     Destinations.ALBUM,
-                    arguments = listOf(navArgument("albumId") { type = NavType.StringType }),
+                    arguments = listOf(
+                        navArgument("sourceId") { type = NavType.StringType },
+                        navArgument("albumId") { type = NavType.StringType },
+                    ),
                 ) { entry ->
+                    val sourceId = entry.arguments?.getString("sourceId").orEmpty()
                     val albumId = entry.arguments?.getString("albumId").orEmpty()
                     AlbumScreen(
+                        sourceId = sourceId,
                         albumId = albumId,
                         onBack = { navController.popBackStack() },
                         onOpenArtist = { aid, _ ->
-                            navController.navigate(Destinations.artist(aid))
+                            navController.navigate(Destinations.artist(sourceId, aid))
                         },
                         onOpenNowPlaying = { navController.navigate(Destinations.NOW_PLAYING) },
                     )
