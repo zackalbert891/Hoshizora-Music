@@ -6,7 +6,6 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -35,8 +34,6 @@ import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.MarkunreadMailbox
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.PhoneAndroid
-import androidx.compose.material.icons.filled.QrCode2
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Smartphone
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -60,7 +57,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -137,9 +133,6 @@ fun NeteaseLoginScreen(onBack: () -> Unit, onSuccess: () -> Unit) {
                         style = MaterialTheme.typography.titleMedium,
                         modifier = Modifier.weight(1f),
                     )
-                    if (vm.tab == NeteaseLoginTab.QR) {
-                        IconButton(onClick = vm::startQr) { Icon(Icons.Filled.Refresh, "刷新") }
-                    }
                 }
             },
         ) { padding ->
@@ -211,8 +204,7 @@ private fun BrandHeader() {
 
 /** 各页签在分段控件里显示的短名（完整 label 太长，三个挤一行会截断）。 */
 private fun shortLabel(tab: NeteaseLoginTab): String = when (tab) {
-    NeteaseLoginTab.QR -> "扫码"
-    NeteaseLoginTab.PHONE -> "手机号"
+    NeteaseLoginTab.PHONE -> "手机号验证码"
     NeteaseLoginTab.COOKIE -> "Cookie"
 }
 
@@ -280,43 +272,10 @@ private fun LoginPaneCard(vm: NeteaseLoginViewModel) {
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         when (vm.tab) {
-            NeteaseLoginTab.QR -> QrPane(vm)
             NeteaseLoginTab.PHONE -> PhonePane(vm)
             NeteaseLoginTab.COOKIE -> CookiePane(vm)
         }
         StatusStrip(vm)
-    }
-}
-
-// ------------------------------------------------------------------ 扫码
-
-@Composable
-private fun QrPane(vm: NeteaseLoginViewModel) {
-    PaneHeader(
-        icon = Icons.Filled.QrCode2,
-        title = "用网易云 App 扫一扫",
-        subtitle = "二维码约 5 分钟有效，过期会自动换一张。",
-    )
-    Spacer(Modifier.height(18.dp))
-    Box(
-        Modifier
-            .size(214.dp)
-            .shadow(10.dp, RoundedCornerShape(20.dp))
-            .background(Color.White, RoundedCornerShape(20.dp))
-            .padding(12.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        vm.qrBitmap?.let { bmp ->
-            Image(
-                bitmap = bmp.asImageBitmap(),
-                contentDescription = "登录二维码",
-                modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(10.dp)),
-            )
-        } ?: CircularProgressIndicator(
-            modifier = Modifier.size(40.dp),
-            color = BrandRed,
-            strokeWidth = 3.dp,
-        )
     }
 }
 
@@ -626,7 +585,7 @@ private fun RiskVerifyOverlay(vm: NeteaseLoginViewModel) {
                     .navigationBarsPadding(),
             ) {
                 Text(
-                    "在上方页面完成验证后点下面这个按钮，会自动带着验证结果重新获取二维码",
+                    "在上方页面完成验证后点下面这个按钮，会自动带着验证结果重新登录",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

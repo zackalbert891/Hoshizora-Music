@@ -175,27 +175,6 @@ class QqLoginManager @Inject constructor(
         )
     }
 
-    /** 发送手机验证码，返回 SENT / CAPTCHA（含滑块验证页地址） / ERROR。 */
-    suspend fun sendAuthCode(phone: String, cookie: String = ""): AuthCodeResult = withContext(Dispatchers.IO) {
-        val json = """{"req_0":{"module":"music.login.LoginServer","method":"SendPhoneAuthCode","param":{"tmeAppid":"qqmusic","areaCode":"86","phoneNo":"$phone"}},"comm":{"tmeLoginMethod":3,"format":"json","ct":23,"cv":0}}"""
-        val resp = cgiPost(json, cookie) ?: return@withContext AuthCodeResult("ERROR")
-        val code = runCatching { gson.fromJson(resp, LoginResp::class.java).req_0?.code }.getOrNull() ?: -1
-        val securityUrl = Regex(""""securityURL":"([^"]+)"""").find(resp)?.groupValues?.get(1).orEmpty()
-        when (code) {
-            0 -> AuthCodeResult("SENT")
-            20276 -> AuthCodeResult("CAPTCHA", securityUrl)
-            else -> AuthCodeResult("ERROR")
-        }
-    }
-
-    /** 用手机号 + 验证码登录（走原生账号体系，可拿到 SVIP 权限）。 */
-    suspend fun phoneLogin(phone: String, code: String): QqLoginResult = withContext(Dispatchers.IO) {
-        val json = """{"req_0":{"module":"music.login.LoginServer","method":"Login","param":{"code":"$code","loginMode":1,"phoneNo":"$phone"}},"comm":{"tmeLoginMethod":3,"tmeLoginType":0,"format":"json","ct":23,"cv":0}}"""
-        val resp = cgiPost(json, "") ?: return@withContext QqLoginResult("ERROR", message = "网络异常，请重试")
-        // 原生账号体系：登录类型 0。取流的 comm.tmeLoginType 要与登录时保持一致。
-        parseCredential(resp, loginType = LOGIN_TYPE_NATIVE)
-    }
-
     private suspend fun cgiPost(json: String, cookie: String): String? = withContext(Dispatchers.IO) {
         val builder = Request.Builder()
             .url("https://u.y.qq.com/cgi-bin/musicu.fcg")
@@ -463,7 +442,6 @@ class QqLoginManager @Inject constructor(
         val message: String = "",  // 分类提示（过期 / 拒绝 / 失败原因）
     )
 
-    data class AuthCodeResult(val status: String, val securityUrl: String = "")
 
     data class LoginResp(val code: Int = 0, val req_0: LoginReq0? = null)
 

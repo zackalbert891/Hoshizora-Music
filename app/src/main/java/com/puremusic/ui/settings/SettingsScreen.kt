@@ -67,7 +67,6 @@ import com.puremusic.ui.theme.pressable
 fun SettingsScreen(
     backgroundImagePath: String?,
     onLogin: () -> Unit,
-    onPhoneLogin: () -> Unit,
     onNeteaseLogin: () -> Unit = {},
 ) {
     val vm: SettingsViewModel = hiltViewModel()
@@ -75,7 +74,6 @@ fun SettingsScreen(
     val bgPath by vm.backgroundImagePath.collectAsStateWithLifecycle()
     val accounts by vm.accounts.collectAsStateWithLifecycle()
     val qqAccount = accounts[MusicSourceType.QQ]
-    val qqStatus by vm.qqLoginStatus.collectAsStateWithLifecycle()
     val neteaseAccount = accounts[MusicSourceType.NETEASE]
 
     var showCookieDialog by remember { mutableStateOf(false) }
@@ -144,45 +142,10 @@ fun SettingsScreen(
                 ) { dismiss ->
                     if (qqAccount != null) {
                         DropdownMenuItem(
-                            text = {
-                                Text(
-                                    qqStatus.text,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = if (qqStatus.valid) MaterialTheme.colorScheme.primary
-                                    else MaterialTheme.colorScheme.error,
-                                )
-                            },
-                            onClick = { },
-                        )
-                        if (!qqStatus.error.isNullOrBlank()) {
-                            DropdownMenuItem(
-                                text = {
-                                    Text(
-                                        qqStatus.error!!,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.error,
-                                    )
-                                },
-                                onClick = { },
-                            )
-                        }
-                        DropdownMenuItem(
-                            text = { Text("检查登录态") },
-                            onClick = { dismiss(); vm.recheckQqLogin() },
-                        )
-                        DropdownMenuItem(
-                            text = { Text("检测会员权益") },
-                            onClick = { dismiss(); vm.probeQqVip() },
-                        )
-                        DropdownMenuItem(
                             text = { Text("退出登录") },
                             onClick = { dismiss(); vm.logout(MusicSourceType.QQ) },
                         )
                     } else {
-                        DropdownMenuItem(
-                            text = { Text("手机号登录") },
-                            onClick = { dismiss(); onPhoneLogin() },
-                        )
                         DropdownMenuItem(
                             text = { Text("扫码登录") },
                             onClick = { dismiss(); onLogin() },
@@ -208,7 +171,7 @@ fun SettingsScreen(
                         )
                     } else {
                         DropdownMenuItem(
-                            text = { Text("扫码登录") },
+                            text = { Text("手机号 / Cookie 登录") },
                             onClick = { dismiss(); onNeteaseLogin() },
                         )
                     }
@@ -384,29 +347,6 @@ fun SettingsScreen(
         CookieDialog(
             onSave = { vm.saveCookie(it) },
             onDismiss = { showCookieDialog = false },
-        )
-    }
-
-    // 会员权益实测结果：逐组参数列出 purl / result，便于定位「有会员却播不了」的原因
-    val vipProbe by vm.vipProbe.collectAsStateWithLifecycle()
-    vipProbe?.let { text ->
-        AlertDialog(
-            onDismissRequest = vm::dismissVipProbe,
-            title = { Text("QQ 会员权益检测") },
-            text = {
-                Column(Modifier.verticalScroll(rememberScrollState())) {
-                    Text(
-                        "purl=true 即该组参数下能取到完整直链；result=101404 表示无权限。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    Text(text, style = MaterialTheme.typography.bodySmall)
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = vm::dismissVipProbe) { Text("关闭") }
-            },
         )
     }
 

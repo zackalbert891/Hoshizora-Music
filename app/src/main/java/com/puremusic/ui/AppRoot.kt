@@ -74,7 +74,6 @@ import com.puremusic.ui.library.PlaylistDetailScreen
 import com.puremusic.ui.search.SearchScreen
 import com.puremusic.ui.login.LoginScreen
 import com.puremusic.ui.login.NeteaseLoginScreen
-import com.puremusic.ui.login.PhoneLoginScreen
 import com.puremusic.ui.nowplaying.NowPlayingScreen
 import com.puremusic.ui.settings.SettingsScreen
 import com.puremusic.ui.source.SourceScreen
@@ -85,7 +84,6 @@ object Destinations {
     const val SETTINGS = "settings"
     const val NOW_PLAYING = "nowplaying"
     const val LOGIN = "login"
-    const val PHONE_LOGIN = "phonelogin"
     const val NETEASE_LOGIN = "neteaselogin"
     const val PLAYLIST = "playlist/{sourceId}/{playlistId}/{playlistName}"
     const val SEARCH = "search/{sourceId}"
@@ -148,7 +146,6 @@ fun AppRoot() {
         val showBottomBar = route != null &&
             route != Destinations.NOW_PLAYING &&
             route != Destinations.LOGIN &&
-            route != Destinations.PHONE_LOGIN &&
             route != Destinations.NETEASE_LOGIN
 
         val currentSong by vm.currentSong.collectAsStateWithLifecycle()
@@ -279,7 +276,6 @@ fun AppRoot() {
                     SettingsScreen(
                         backgroundImagePath = bgPath,
                         onLogin = { navController.navigate(Destinations.LOGIN) },
-                        onPhoneLogin = { navController.navigate(Destinations.PHONE_LOGIN) },
                         onNeteaseLogin = { navController.navigate(Destinations.NETEASE_LOGIN) },
                     )
                 }
@@ -329,13 +325,6 @@ fun AppRoot() {
                 }
                 composable(Destinations.LOGIN) {
                     LoginScreen(
-                        onBack = { navController.popBackStack() },
-                        onSuccess = { navController.popBackStack() },
-                        onPhoneLogin = { navController.navigate(Destinations.PHONE_LOGIN) },
-                    )
-                }
-                composable(Destinations.PHONE_LOGIN) {
-                    PhoneLoginScreen(
                         onBack = { navController.popBackStack() },
                         onSuccess = { navController.popBackStack() },
                     )

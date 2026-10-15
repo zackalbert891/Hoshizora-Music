@@ -13,23 +13,12 @@ import com.puremusic.ui.login.QqLoginManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.io.File
 import javax.inject.Inject
-
-/** QQ 音乐登录态展示信息。 */
-data class QqLoginStatus(
-    val loggedIn: Boolean = false,
-    val valid: Boolean = false,
-    val text: String = "未登录（VIP 歌曲需登录）",
-    val error: String? = null,
-)
 
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
@@ -37,70 +26,25 @@ class SettingsViewModel @Inject constructor(
     private val settingsStore: SettingsStore,
     private val accountStore: AccountStore,
     private val qqLogin: QqLoginManager,
-    private val qqSource: com.puremusic.source.qq.QqMusicSource,
 ) : ViewModel() {
-
-    private val _qqLoginStatus = MutableStateFlow(QqLoginStatus())
-    /** QQ 音乐登录态（进入设置页自动检查一次；过期时尝试自动续期）。 */
-    val qqLoginStatus: StateFlow<QqLoginStatus> = _qqLoginStatus.asStateFlow()
-
-    private val _vipProbe = MutableStateFlow<String?>(null)
-    /**
-     * QQ 会员权益实测结果（null = 未检测）。
-     *
-     * 直接拿一首需权益的曲目试取流，逐组参数输出 purl / result，
-     * 用来回答「我明明有会员，为什么 VIP 歌还是播不了」。
-     */
-    val vipProbe: StateFlow<String?> = _vipProbe.asStateFlow()
-
-    /** 实测当前 QQ 账号的会员权益是否生效（需登录）。 */
-    fun probeQqVip() {
-        viewModelScope.launch {
-            _vipProbe.value = "正在检测会员权益…"
-            val result = runCatching { qqSource.probeVip() }.getOrElse { e ->
-                android.util.Log.e("QqVipProbe", "probeVip 抛异常", e)
-                _vipProbe.value = "检测失败：${e.message}"
-                return@launch
-            }
-            android.util.Log.e("QqVipProbe", "探针完成 lines=${result.lines.size} loggedIn=${result.loggedIn}")
-            val joined = result.lines.joinToString("\n")
-            android.util.Log.e("QqVipProbe", "结果全文(${joined.length}字):\n$joined")
-            _vipProbe.value = joined
-        }
-    }
-
-    fun dismissVipProbe() {
-        _vipProbe.value = null
-    }
 
     init {
         viewModelScope.launch {
             // 等首次磁盘读取完成，避免把「尚未加载」误判为未登录
             accountStore.loaded.first { it }
-            checkQqLogin()
+            refreshQqCredentialIfNeeded()
         }
     }
 
-    /** 手动重新检查登录态（过期则尝试自动续期，失败才提示重新登录）。 */
-    fun recheckQqLogin() {
-        viewModelScope.launch { checkQqLogin() }
-    }
-
-    private suspend fun checkQqLogin() {
-        val account = accountStore.accounts.value[MusicSourceType.QQ]
-        if (account == null || account.cookie.isBlank()) {
-            _qqLoginStatus.value = QqLoginStatus()
-            return
-        }
-        if (!qqLogin.isCredentialExpired(account)) {
-            _qqLoginStatus.value = QqLoginStatus(
-                loggedIn = true, valid = true, text = "登录有效",
-            )
-            return
-        }
-        _qqLoginStatus.value = QqLoginStatus(
-            loggedIn = true, valid = false, text = "登录已过期，正在自动续期…",
-        )
+    /**
+     * 进入设置页时检查一次 QQ 凭证：过期就静默自动续期。
+     *
+     * 纯副作用，不对外抛状态 —— 登录态的展示与操作都收敛成菜单里的「退出登录」一项。
+     */
+    private suspend fun refreshQqCredentialIfNeeded() {
+        val account = accountStore.accounts.value[MusicSourceType.QQ] ?: return
+        if (account.cookie.isBlank()) return
+        if (!qqLogin.isCredentialExpired(account)) return
         val result = runCatching { qqLogin.refreshCredential(account) }.getOrNull()
         if (result != null && result.status == "DONE" && result.musickey.isNotBlank()) {
             accountStore.save(
@@ -113,14 +57,10 @@ class SettingsViewModel @Inject constructor(
                         ?: account.credentialExpiresAt,
                 )
             )
-            _qqLoginStatus.value = QqLoginStatus(
-                loggedIn = true, valid = true, text = "登录有效（已自动续期）",
-            )
         } else {
-            val hint = result?.message?.takeIf { it.isNotBlank() }
-                ?: "自动续期失败，请重新登录"
-            _qqLoginStatus.value = QqLoginStatus(
-                loggedIn = true, valid = false, text = "登录已过期", error = hint,
+            android.util.Log.e(
+                "QqLogin",
+                "QQ 凭证自动续期失败：${result?.message.orEmpty()}",
             )
         }
     }

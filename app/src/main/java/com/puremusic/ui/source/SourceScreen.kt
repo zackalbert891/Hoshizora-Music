@@ -197,7 +197,7 @@ fun SourceScreen(
                             Text("登录后查看 $name 的云端歌单", style = MaterialTheme.typography.titleMedium)
                             Spacer(Modifier.height(6.dp))
                             Text(
-                                "支持扫码登录、手机号登录与手动粘贴 Cookie",
+                                "支持扫码登录与手动粘贴 Cookie",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )

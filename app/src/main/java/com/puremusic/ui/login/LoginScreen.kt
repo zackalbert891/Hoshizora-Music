@@ -15,12 +15,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -33,7 +33,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 
 @Composable
-fun LoginScreen(onBack: () -> Unit, onSuccess: () -> Unit, onPhoneLogin: () -> Unit = {}) {
+fun LoginScreen(onBack: () -> Unit, onSuccess: () -> Unit) {
     val vm: LoginViewModel = hiltViewModel()
 
     LaunchedEffect(vm.loggedIn) {
@@ -59,7 +59,8 @@ fun LoginScreen(onBack: () -> Unit, onSuccess: () -> Unit, onPhoneLogin: () -> U
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Spacer(Modifier.height(24.dp))
-            Text("用 QQ 扫一扫登录", style = MaterialTheme.typography.titleMedium)
+            // 这一屏只留这一行文字：加载中用转圈占位，仅在真的出错时才额外提示
+            Text("用 QQ 扫一扫", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(16.dp))
 
             Surface(color = Color.White, shape = RoundedCornerShape(12.dp)) {
@@ -71,29 +72,17 @@ fun LoginScreen(onBack: () -> Unit, onSuccess: () -> Unit, onPhoneLogin: () -> U
                     )
                 } else {
                     Box(Modifier.size(220.dp).padding(16.dp), contentAlignment = Alignment.Center) {
-                        Text(vm.status)
+                        if (vm.error.isNullOrBlank()) {
+                            CircularProgressIndicator(modifier = Modifier.size(36.dp), strokeWidth = 3.dp)
+                        } else {
+                            Text(
+                                vm.error.orEmpty(),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
                     }
                 }
-            }
-
-            Spacer(Modifier.height(16.dp))
-            Text(vm.status, style = MaterialTheme.typography.bodyLarge)
-            vm.error?.let {
-                Spacer(Modifier.height(8.dp))
-                Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-            }
-
-            Spacer(Modifier.height(28.dp))
-            // 两种登录方式都能正常使用会员权益（实测扫码也可取到 FLAC 无损），
-            // 差别只在账号体系：扫码走 QQ 互联 OAuth(2)，手机号走原生账号(0)。
-            Text(
-                "扫码与手机号均可使用会员权益",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.height(8.dp))
-            TextButton(onClick = onPhoneLogin, modifier = Modifier.fillMaxWidth()) {
-                Text("用手机号登录")
             }
         }
     }
